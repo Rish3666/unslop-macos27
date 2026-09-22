@@ -148,8 +148,67 @@ confirm() {
 }
 
 # =============================================================================
-# Pre-flight Checks
+# Pre-flight Checks & SIP Handler
 # =============================================================================
+
+SIP_DISABLED_BY_SCRIPT=false
+
+handle_sip() {
+    SIP_STATUS=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
+
+    if [[ "$SIP_STATUS" == "enabled" ]]; then
+        log_warn "System Integrity Protection (SIP) is ENABLED"
+        log_warn "Apple Intelligence system models (5-15 GB) CANNOT be removed."
+        echo ""
+        echo -e "${BOLD}${YELLOW}  ┌──────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${BOLD}${YELLOW}  │  SIP protects system files from modification.              │${NC}"
+        echo -e "${BOLD}${YELLOW}  │  To fully remove Apple Intelligence, SIP must be disabled. │${NC}"
+        echo -e "${BOLD}${YELLOW}  │  This requires restarting into Recovery Mode.              │${NC}"
+        echo -e "${BOLD}${YELLOW}  └──────────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+
+        if confirm "Disable SIP now? (will restart into Recovery Mode)"; then
+            echo ""
+            echo -e "${BOLD}${CYAN}Disabling SIP requires these steps:${NC}"
+            echo ""
+            echo "  Your Mac will restart. When it does:"
+            echo ""
+            echo "  Apple Silicon Macs:"
+            echo "    1. Shut down your Mac"
+            echo "    2. Press and HOLD the power button until 'Loading startup options'"
+            echo "    3. Click Options > Continue"
+            echo "    4. Open Terminal from the Utilities menu"
+            echo ""
+            echo "  Intel Macs:"
+            echo "    1. Restart your Mac"
+            echo "    2. Immediately hold Cmd+R until you see the Apple logo"
+            echo ""
+            echo "  Then in Recovery Mode Terminal:"
+            echo ""
+            echo -e "    ${GREEN}csrutil disable${NC}"
+            echo ""
+            echo "  After that, restart your Mac and run this script again."
+            echo ""
+
+            if confirm "Ready to restart into Recovery Mode?"; then
+                SIP_DISABLED_BY_SCRIPT=true
+                log_info "Restarting into Recovery Mode in 5 seconds..."
+                log_info "Hold Cmd+R (Intel) or power button (Apple Silicon) when it restarts"
+                sleep 5
+                # Attempt to restart into Recovery using nvram
+                sudo nvram "recovery-boot-mode=upgrade" 2>/dev/null
+                sudo reboot 2>/dev/null || shutdown -r now 2>/dev/null
+                exit 0
+            fi
+        fi
+
+        echo ""
+        log_info "Continuing with SIP enabled. Some files will not be removed."
+        log_info "You can re-run this script after disabling SIP manually."
+    else
+        log_info "SIP is disabled - full cleanup possible."
+    fi
+}
 
 preflight_checks() {
     print_section "Pre-flight Checks"
@@ -161,15 +220,8 @@ preflight_checks() {
     fi
     log_info "Running on macOS $(sw_vers -productVersion)"
 
-    # Check SIP status (informational)
-    SIP_STATUS=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
-    if [[ "$SIP_STATUS" == "enabled" ]]; then
-        log_warn "System Integrity Protection (SIP) is enabled."
-        log_warn "Some system files cannot be removed while SIP is on."
-        log_warn "To remove more files, boot into Recovery Mode and disable SIP."
-    else
-        log_info "SIP is disabled - full cleanup possible."
-    fi
+    # Handle SIP
+    handle_sip
 
     # Get current disk usage
     echo ""
@@ -656,16 +708,37 @@ print_summary() {
         fi
     fi
 
-    echo ""
-    echo -e "${BOLD}Important notes:${NC}"
-    echo "  1. Restart your Mac for all changes to take effect."
-    echo "  2. Apple Intelligence may re-enable after system updates."
-    echo "  3. To fully remove system models, you may need to:"
-    echo "     a) Boot into Recovery Mode (restart + hold Cmd+R)"
-    echo "     b) Open Terminal from Utilities menu"
-    echo "     c) Run: csrutil disable"
-    echo "     d) Restart and run this script again"
-    echo "     e) Re-enable SIP when done: csrutil enable"
+    # Check if SIP was the issue
+    SIP_STATUS=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
+    if [[ "$SIP_STATUS" == "enabled" ]] && [[ $ERRORS -gt 0 ]]; then
+        echo ""
+        echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}${BOLD}║  SOME FILES COULD NOT BE REMOVED - SIP IS THE REASON     ║${NC}"
+        echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${BOLD}Re-run this script to get the SIP disable prompt:${NC}"
+        echo ""
+        echo "    ./cleanup.sh"
+        echo ""
+        echo -e "${BOLD}Or disable SIP manually:${NC}"
+        echo ""
+        echo "  1. Restart your Mac"
+        echo "  2. Hold Cmd+R (Intel) or power button (Apple Silicon)"
+        echo "  3. Open Terminal from Utilities menu"
+        echo "  4. Run: csrutil disable"
+        echo "  5. Restart your Mac"
+        echo "  6. Run: ./cleanup.sh"
+        echo "  7. Re-enable SIP when done: sudo csrutil enable"
+        echo ""
+        echo -e "${YELLOW}NOTE: Disabling SIP reduces your Mac's security.${NC}"
+        echo -e "${YELLOW}Re-enable it as soon as you finish the cleanup.${NC}"
+    else
+        echo ""
+        echo -e "${BOLD}Important notes:${NC}"
+        echo "  1. Restart your Mac for all changes to take effect."
+        echo "  2. Apple Intelligence may re-enable after system updates."
+    fi
+
     echo ""
 
     # Show disk usage after
