@@ -213,7 +213,7 @@ handle_sip() {
             echo ""
             echo -e "${BOLD}Step 6: Re-enable SIP when done (IMPORTANT!)${NC}"
             echo ""
-            echo "    After cleanup completes, disable SIP again:"
+            echo "    After cleanup completes, re-enable SIP:"
             echo "    Boot into Recovery Mode (same as Step 1)"
             echo "    Open Terminal, then type:"
             echo ""
@@ -221,20 +221,14 @@ handle_sip() {
             echo ""
             echo "    Then restart your Mac."
             echo ""
-            echo -e "${YELLOW}  TIP: Keep this terminal open. After you return from Recovery,${NC}"
+            echo -e "${YELLOW}  NOTE: After you return from Recovery Mode with SIP disabled,${NC}"
             echo -e "${YELLOW}  run ./cleanup.sh again to finish removing the files.${NC}"
             echo ""
 
-            if confirm "Ready to restart into Recovery Mode?"; then
-                SIP_DISABLED_BY_SCRIPT=true
-                log_info "Restarting into Recovery Mode in 5 seconds..."
-                log_info "Hold Cmd+R (Intel) or power button (Apple Silicon) when it restarts"
-                sleep 5
-                # Attempt to restart into Recovery using nvram
-                sudo nvram "recovery-boot-mode=upgrade" 2>/dev/null
-                sudo reboot 2>/dev/null || shutdown -r now 2>/dev/null
-                exit 0
-            fi
+            echo -e "${BOLD}${CYAN}Press Enter when you are ready to restart your Mac manually.${NC}"
+            echo -e "${CYAN}Remember: Hold Cmd+R (Intel) or power button (Apple Silicon).${NC}"
+            read -r
+            exit 0
         fi
 
         echo ""
