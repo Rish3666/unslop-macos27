@@ -98,6 +98,8 @@ Also seen earlier (may already be gone): `UAF_FM_GenerativeModels`, `UAF_FM_Visu
 | 5 | AssetsV2 firmlink: models on Data volume | **closed** (script targets Data path) |
 | 6 | Leftover test files; stale header URL; phase labels | **closed** |
 | 7 | EROFS follows `.AssetData` inode — `mv` does not unlock deletion | open |
+| 8 | AssetsV2 `com.apple.rootless=MobileAsset`; may underlie `.AssetData` EROFS | open |
+| 9 | SSV disabled but `mount -uw /` still exit 66 | open |
 
 ### Latest research (issue #7)
 
