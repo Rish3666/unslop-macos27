@@ -1,200 +1,180 @@
-# AI Cleanup macOS
+# Unslop macOS 27
 
-A comprehensive script to remove Apple Intelligence, Siri, and local AI model files from macOS to free up disk space and reduce idle CPU usage.
+> Reclaim your Mac from bloat. Disable Apple Intelligence, Siri, and purge local AI models to free disk space and stop idle CPU drain.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/macOS-27%2B-blue.svg)](https://www.apple.com/macos/)
+[![Shell Script](https://img.shields.io/badge/Shell-Bash-orange.svg)](cleanup.sh)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+---
+
+## Why This Exists
+
+macOS 27 ships with Apple Intelligence enabled by default. The local AI models alone consume **5-15 GB** of storage, and background Siri/Apple Intelligence processes eat CPU cycles even when you're not using them. This script gives you back control:
+
+- **Free 5-50 GB** of storage by removing AI model files
+- **Stop idle CPU usage** from Siri and Apple Intelligence daemons
+- **Clean up local AI models** you installed (Ollama, LM Studio, Hugging Face, etc.)
+- **100% local** -- no data leaves your machine, no accounts required
 
 ## Features
 
-- **Disable Apple Intelligence** - Turn off Apple's AI features at the system level
-- **Disable Siri** - Completely disable Siri and its background processes
-- **Remove Local AI Models** - Clean up models from:
-  - Ollama
-  - LM Studio
-  - Hugging Face
-  - llama.cpp
-  - ComfyUI
-  - Whisper
-  - Cursor AI
-  - And more...
-- **Clean System Caches** - Remove AI-related caches
-- **Disable Background Services** - Stop AI-related daemon processes
-- **Safe Operation** - Dry-run mode, confirmation prompts, error handling
+| Feature | What It Does |
+|---------|--------------|
+| Disable Apple Intelligence | Turns off Apple's AI features at the system level |
+| Disable Siri | Completely removes Siri and its background processes |
+| Remove Apple Intelligence Models | Deletes 5-15 GB of on-device AI models |
+| Clean Local AI Models | Purges Ollama, LM Studio, HuggingFace, llama.cpp, ComfyUI, Whisper, and more |
+| Clean System Caches | Removes AI-related caches from ~/Library |
+| Disable Background Services | Kills AI daemons and unloads launch agents |
+| Dry-Run Mode | Preview everything before making changes |
+| Confirmation Prompts | Never deletes anything without your explicit approval |
 
-## Quick Start
+## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/Rish3666/unslop-macos27.git
 cd unslop-macos27
-
-# Make the script executable
 chmod +x cleanup.sh
-
-# Run with dry-run first (recommended)
-./cleanup.sh --dry-run
-
-# Run the actual cleanup
-./cleanup.sh
 ```
 
 ## Usage
 
-### Basic Commands
-
 ```bash
-# Interactive mode (recommended)
-./cleanup.sh
-
-# Preview changes without making them
+# Always preview first -- this shows what WOULD be deleted
 ./cleanup.sh --dry-run
 
-# Skip all confirmation prompts (dangerous!)
-./cleanup.sh --force
+# Run the interactive cleanup (asks before each action)
+./cleanup.sh
 
-# Verbose output
-./cleanup.sh --verbose
+# Full auto mode (skips confirmations -- use with caution)
+./cleanup.sh --force
 ```
 
 ### Command Line Options
 
-| Option | Description |
-|--------|-------------|
-| `--dry-run`, `-n` | Preview what would be deleted without making changes |
-| `--force`, `-f` | Skip confirmation prompts (use with caution!) |
-| `--verbose`, `-v` | Show detailed output during cleanup |
+| Flag | Description |
+|------|-------------|
+| `--dry-run`, `-n` | Preview changes without modifying anything |
+| `--force`, `-f` | Skip all confirmation prompts |
+| `--verbose`, `-v` | Show detailed output |
 | `--help`, `-h` | Show help message |
 
 ## What Gets Cleaned
 
 ### Phase 1: Disable Apple Intelligence & Siri
-- Disables Apple Intelligence via system preferences
-- Turns off Siri completely
-- Disables Siri Suggestions in Spotlight
-- Disables "Hey Siri" listening
-- Disables Siri on lock screen
+Disables via `defaults write` commands:
+- Apple Intelligence toggle
+- Siri completely
+- Siri Suggestions in Spotlight
+- "Hey Siri" voice trigger
+- Siri on lock screen
 
 ### Phase 2: Remove Apple Intelligence Models
+Deletes Apple's on-device AI model files:
 - `/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_GenerativeModels`
 - `/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_Visual`
 - `~/Library/Caches/com.apple.intelligence`
 - `~/Library/Caches/com.apple.siri`
-- And more system-level AI files
+- Other system-level AI assets
 
 ### Phase 3: Remove Local AI Models
-Cleans up downloaded models from:
-- **Ollama** - `~/.ollama/`
-- **LM Studio** - `~/.cache/lm-studio/`, `~/.lm-studio/`
-- **Hugging Face** - `~/.cache/huggingface/`
-- **llama.cpp** - `~/.llama/`
-- **ComfyUI** - `~/.cache/comfyui/`
-- **Whisper** - `~/.cache/whisper/`
-- **Cursor AI** - `~/Library/Application Support/Cursor`
-- **GitHub Copilot** - VS Code extension caches
-- Large model files (`.gguf`, `.safetensors`, `.mlx`)
+Scans and cleans up models from:
+
+| Tool | Path |
+|------|------|
+| Ollama | `~/.ollama/` |
+| LM Studio | `~/.cache/lm-studio/`, `~/.lm-studio/` |
+| Hugging Face | `~/.cache/huggingface/` |
+| llama.cpp | `~/.llama/` |
+| ComfyUI | `~/.cache/comfyui/` |
+| Whisper | `~/.cache/whisper/` |
+| Cursor AI | `~/Library/Application Support/Cursor` |
+| OMLX | `~/.omlx/` |
+| Stability AI | `~/.cache/stability-ai/` |
+| PyTorch | `~/.cache/torch/` |
+| GitHub Copilot | VS Code extension caches |
+
+Also scans for large model files (`.gguf`, `.safetensors`, `.mlx`) across your home directory.
 
 ### Phase 4: Clean System Caches
-- Siri caches
+Removes AI-related caches:
+- Siri analytics and caches
 - Spotlight caches
-- AI-related system caches
+- CloudKit caches
+- TCC (Transparency, Consent, Control) caches
 
 ### Phase 5: Disable Background Services
-- Kills running AI processes (siri, assistantd, etc.)
+- Kills running AI processes (siri, assistantd, SiriNCService, etc.)
 - Unloads Siri launch agents
 
-## Safety Features
+## Safety
 
-### Dry-Run Mode
-Always use `--dry-run` first to preview what the script will do:
+**This script will never delete anything without asking first.**
 
-```bash
-./cleanup.sh --dry-run
-```
-
-### Confirmation Prompts
-By default, the script asks for confirmation before each major action.
-
-### Error Handling
-The script continues even if some operations fail (e.g., SIP-protected files).
+- Always run `--dry-run` first to preview changes
+- Confirmation prompts before every deletion
+- Error handling -- continues gracefully if a file can't be removed
+- SIP-protected files are detected and skipped with a warning
 
 ### System Integrity Protection (SIP)
-Some Apple system files are protected by SIP. To remove these:
+
+Some Apple system files are protected by SIP and cannot be deleted while it's enabled. To fully clean these:
 
 1. Restart your Mac
 2. Hold `Cmd+R` during boot to enter Recovery Mode
-3. Open Terminal from Utilities menu
+3. Open Terminal from the Utilities menu
 4. Run: `csrutil disable`
-5. Restart and run the cleanup script again
-6. Re-enable SIP when done: `csrutil enable`
+5. Restart and run this script again
+6. When done, re-enable SIP: `csrutil enable`
 
 ## Expected Results
 
-- **Disk Space**: Typically 5-50 GB freed depending on installed AI tools
-- **CPU Usage**: Reduced idle CPU from disabled Siri/AI background processes
-- **Memory**: Lower RAM usage from stopped AI services
-
-## Important Notes
-
-1. **Restart Required** - Some changes require a restart to take full effect
-2. **Updates May Re-enable** - Apple Intelligence may re-enable after macOS updates
-3. **Backup First** - Consider backing up important data before running
-4. **Irreversible** - Deleted model files cannot be recovered without re-downloading
+| Metric | Before | After |
+|--------|--------|-------|
+| Disk Space | X GB free | +5-50 GB free |
+| Idle CPU | Siri/AI daemons running | Reduced background activity |
+| RAM | AI services loaded | Lower memory usage |
 
 ## Troubleshooting
 
-### "Permission denied" errors
+**"Permission denied" errors**
 ```bash
-# Run with sudo for system-level files
 sudo ./cleanup.sh
 ```
 
-### Files not being removed
-- Check if SIP is enabled (see Safety Features section)
-- Some files may be in use by running processes
+**Files not being removed**
+- SIP may be enabled (see above)
+- Some files may be in use -- restart and try again
 
-### Want to restore Apple Intelligence?
-1. Go to System Settings > Apple Intelligence & Siri
+**Want to restore Apple Intelligence?**
+1. System Settings > Apple Intelligence & Siri
 2. Toggle Apple Intelligence back on
-3. macOS will re-download the required models
+3. macOS re-downloads the models automatically
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+We welcome contributions from everyone! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-### How to Contribute
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Ideas for Contributions
-
-- [ ] Add support for more AI tools (Stable Diffusion, ComfyUI, etc.)
-- [ ] Create a GUI version
-- [ ] Add uninstall/reinstall functionality
-- [ ] Improve SIP handling
-- [ ] Add logging/output to file option
-- [ ] Create Homebrew formula
-- [ ] Add CI/CD testing
+**Ways to contribute:**
+- Add support for more AI tools (Stable Diffusion, Jan, GPT4All, etc.)
+- Create a GUI version (SwiftUI or Electron)
+- Add logging to file
+- Create a Homebrew formula
+- Improve error handling
+- Write tests
+- Improve documentation
+- Report bugs
 
 ## Related Projects
 
-- [apple-intelligence-remover](https://github.com/minagishl/apple-intelligence-remover) - Similar tool for Apple Intelligence specifically
-- [LLM Cleaner](https://getllmcleaner.com/) - Commercial GUI tool for cleaning AI models
+- [apple-intelligence-remover](https://github.com/minagishl/apple-intelligence-remover) -- Apple Intelligence specific removal tool
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE) -- use it, fork it, improve it. Just keep the license notice.
 
 ## Disclaimer
 
-This script modifies system settings and deletes files. Use at your own risk. Always run with `--dry-run` first. The authors are not responsible for any data loss or system issues.
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/Rish3666/unslop-macos27/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Rish3666/unslop-macos27/discussions)
-
----
-
-**If this script helped you, please give it a star on GitHub!**
+This script modifies system settings and deletes files. Use at your own risk. Always run with `--dry-run` first. We are not responsible for any data loss or system issues. Back up important data before running.
