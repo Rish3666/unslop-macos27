@@ -1,6 +1,6 @@
 # Unslop macOS 27
 
-> Reclaim your Mac from bloat. Disable Apple Intelligence, Siri, and purge local AI models to free disk space and stop idle CPU drain.
+> Disable Apple Intelligence and Siri, remove their model files, and stop idle CPU drain on macOS 27.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-27%2B-blue.svg)](https://www.apple.com/macos/)
@@ -11,11 +11,10 @@
 
 ## Why This Exists
 
-macOS 27 ships with Apple Intelligence enabled by default. The local AI models alone consume **5-15 GB** of storage, and background Siri/Apple Intelligence processes eat CPU cycles even when you're not using them. This script gives you back control:
+macOS 27 ships with Apple Intelligence enabled by default. The on-device AI models consume **5-15 GB** of storage, and background Siri/Apple Intelligence processes eat CPU cycles even when idle. This script removes them.
 
-- **Free 5-50 GB** of storage by removing AI model files
+- **Free 5-15 GB** of storage by removing Apple Intelligence model files
 - **Stop idle CPU usage** from Siri and Apple Intelligence daemons
-- **Clean up local AI models** you installed (Ollama, LM Studio, Hugging Face, etc.)
 - **100% local** -- no data leaves your machine, no accounts required
 
 ## Features
@@ -25,9 +24,9 @@ macOS 27 ships with Apple Intelligence enabled by default. The local AI models a
 | Disable Apple Intelligence | Turns off Apple's AI features at the system level |
 | Disable Siri | Completely removes Siri and its background processes |
 | Remove Apple Intelligence Models | Deletes 5-15 GB of on-device AI models |
-| Clean Local AI Models | Purges Ollama, LM Studio, HuggingFace, llama.cpp, ComfyUI, Whisper, and more |
 | Clean System Caches | Removes AI-related caches from ~/Library |
 | Disable Background Services | Kills AI daemons and unloads launch agents |
+| SIP Integration | Guides you through disabling SIP if needed |
 | Dry-Run Mode | Preview everything before making changes |
 | Confirmation Prompts | Never deletes anything without your explicit approval |
 
@@ -79,35 +78,29 @@ Deletes Apple's on-device AI model files:
 - `~/Library/Caches/com.apple.siri`
 - Other system-level AI assets
 
-### Phase 3: Remove Local AI Models
-Scans and cleans up models from:
-
-| Tool | Path |
-|------|------|
-| Ollama | `~/.ollama/` |
-| LM Studio | `~/.cache/lm-studio/`, `~/.lm-studio/` |
-| Hugging Face | `~/.cache/huggingface/` |
-| llama.cpp | `~/.llama/` |
-| ComfyUI | `~/.cache/comfyui/` |
-| Whisper | `~/.cache/whisper/` |
-| Cursor AI | `~/Library/Application Support/Cursor` |
-| OMLX | `~/.omlx/` |
-| Stability AI | `~/.cache/stability-ai/` |
-| PyTorch | `~/.cache/torch/` |
-| GitHub Copilot | VS Code extension caches |
-
-Also scans for large model files (`.gguf`, `.safetensors`, `.mlx`) across your home directory.
-
-### Phase 4: Clean System Caches
+### Phase 3: Clean System Caches
 Removes AI-related caches:
 - Siri analytics and caches
 - Spotlight caches
 - CloudKit caches
 - TCC (Transparency, Consent, Control) caches
 
-### Phase 5: Disable Background Services
+### Phase 4: Disable Background Services
 - Kills running AI processes (siri, assistantd, SiriNCService, etc.)
 - Unloads Siri launch agents
+
+## System Integrity Protection (SIP)
+
+Apple Intelligence model files are protected by SIP. The script will prompt you to disable SIP if needed:
+
+1. Script detects SIP is enabled
+2. Asks if you want to disable it
+3. Provides step-by-step instructions for your Mac type (Intel or Apple Silicon)
+4. Offers to restart into Recovery Mode automatically
+
+After disabling SIP in Recovery Mode, restart and run the script again to delete the model files.
+
+**Important:** Re-enable SIP when done: `sudo csrutil enable`
 
 ## Safety
 
@@ -116,24 +109,13 @@ Removes AI-related caches:
 - Always run `--dry-run` first to preview changes
 - Confirmation prompts before every deletion
 - Error handling -- continues gracefully if a file can't be removed
-- SIP-protected files are detected and skipped with a warning
-
-### System Integrity Protection (SIP)
-
-Some Apple system files are protected by SIP and cannot be deleted while it's enabled. To fully clean these:
-
-1. Restart your Mac
-2. Hold `Cmd+R` during boot to enter Recovery Mode
-3. Open Terminal from the Utilities menu
-4. Run: `csrutil disable`
-5. Restart and run this script again
-6. When done, re-enable SIP: `csrutil enable`
+- SIP-protected files are detected and handled with clear instructions
 
 ## Expected Results
 
 | Metric | Before | After |
 |--------|--------|-------|
-| Disk Space | X GB free | +5-50 GB free |
+| Disk Space | X GB free | +5-15 GB free |
 | Idle CPU | Siri/AI daemons running | Reduced background activity |
 | RAM | AI services loaded | Lower memory usage |
 
@@ -145,7 +127,7 @@ sudo ./cleanup.sh
 ```
 
 **Files not being removed**
-- SIP may be enabled (see above)
+- SIP may be enabled -- the script will guide you through disabling it
 - Some files may be in use -- restart and try again
 
 **Want to restore Apple Intelligence?**
@@ -156,20 +138,6 @@ sudo ./cleanup.sh
 ## Contributing
 
 We welcome contributions from everyone! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-**Ways to contribute:**
-- Add support for more AI tools (Stable Diffusion, Jan, GPT4All, etc.)
-- Create a GUI version (SwiftUI or Electron)
-- Add logging to file
-- Create a Homebrew formula
-- Improve error handling
-- Write tests
-- Improve documentation
-- Report bugs
-
-## Related Projects
-
-- [apple-intelligence-remover](https://github.com/minagishl/apple-intelligence-remover) -- Apple Intelligence specific removal tool
 
 ## License
 

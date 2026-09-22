@@ -358,189 +358,7 @@ remove_apple_intelligence_models() {
 }
 
 # =============================================================================
-# Phase 3: Remove Local AI Model Files (Ollama, LM Studio, HuggingFace, etc.)
-# =============================================================================
-
-remove_local_ai_models() {
-    print_section "Phase 3: Remove Local AI Model Files"
-
-    # Define model locations and their descriptions
-    declare -A MODEL_PATHS=(
-        # Ollama
-        ["~/.ollama/models"]="Ollama models"
-        ["~/.ollama"]="Ollama data directory"
-
-        # LM Studio
-        ["~/.cache/lm-studio"]="LM Studio cache"
-        ["~/.lm-studio"]="LM Studio data"
-
-        # Hugging Face
-        ["~/.cache/huggingface"]="Hugging Face cache"
-        ["~/.huggingface"]="Hugging Face data"
-
-        # llama.cpp
-        ["~/.llama"]="llama.cpp models"
-
-        # ComfyUI
-        ["~/.cache/comfyui"]="ComfyUI cache"
-        ["~/.ComfyUI"]="ComfyUI data"
-
-        # OMLX
-        ["~/.omlx"]="OMLX models"
-
-        # Whisper
-        ["~/.cache/whisper"]="Whisper models"
-        ["~/.whisper"]="Whisper data"
-
-        # OpenAI local
-        ["~/.cache/openai"]="OpenAI cache"
-
-        # WebAI
-        ["~/.webai"]="WebAI data"
-
-        # Various AI caches
-        ["~/.cache/large-language-models"]="LLM cache"
-        ["~/.cache/ai"]="AI cache"
-        ["~/.local/share/ollama"]="Ollama (Linux-style)"
-
-        # Image generation models
-        ["~/.cache/stability-ai"]="Stability AI cache"
-        ["~/.stable-diffusion"]="Stability AI models"
-
-        # PyTorch/TensorFlow (if used for AI)
-        ["~/.cache/torch"]="PyTorch cache"
-        ["~/.cache/torch_extensions"]="PyTorch extensions"
-        ["~/.cache/tensorflow"]="TensorFlow cache"
-
-        # Cursor AI cache
-        ["~/Library/Application Support/Cursor"]="Cursor AI cache"
-
-        # VS Code AI extensions
-        ["~/Library/Application Support/Code/User/globalStorage/github.copilot"]="GitHub Copilot cache"
-        ["~/Library/Application Support/Code/User/globalStorage/ms-python"]="Python extension cache"
-    )
-
-    local total_found=0
-    local paths_to_delete=()
-
-    echo "Scanning for local AI model files..."
-    echo ""
-
-    for path in "${!MODEL_PATHS[@]}"; do
-        local expanded_path="${path/#\~/$HOME}"
-        if [[ -e "$expanded_path" ]]; then
-            local size
-            size=$(get_dir_size "$expanded_path")
-            if [[ $size -gt 0 ]]; then
-                total_found=$((total_found + size))
-                echo -e "  ${CYAN}Found:${NC} ${MODEL_PATHS[$path]}"
-                echo -e "        Path: $expanded_path"
-                echo -e "        Size: $(format_size $size)"
-                paths_to_delete+=("$expanded_path")
-            fi
-        fi
-    done
-
-    # Also scan for large GGUF/MLX/Safetensors files in common locations
-    echo ""
-    echo "Scanning for model files (GGUF, MLX, Safetensors)..."
-    local model_files
-    model_files=$(find "$HOME" -maxdepth 5 \
-        \( -name "*.gguf" -o -name "*.safetensors" -o -name "*.mlx" -o -name "*.bin" \) \
-        -size +100M 2>/dev/null | head -50)
-
-    if [[ -n "$model_files" ]]; then
-        echo ""
-        echo -e "${YELLOW}Large model files found:${NC}"
-        while IFS= read -r file; do
-            local file_size
-            file_size=$(du -sk "$file" 2>/dev/null | cut -f1)
-            total_found=$((total_found + file_size))
-            echo -e "  ${CYAN}File:${NC} $file"
-            echo -e "        Size: $(format_size $file_size)"
-            paths_to_delete+=("$file")
-        done <<< "$model_files"
-    fi
-
-    if [[ $total_found -eq 0 ]]; then
-        log_warn "No local AI model files found."
-        return
-    fi
-
-    echo ""
-    echo -e "${BOLD}Total local AI data found: $(format_size $total_found)${NC}"
-    echo -e "${YELLOW}WARNING: This will permanently delete these files!${NC}"
-    echo ""
-
-    if confirm "Remove ALL local AI model files?"; then
-        for path in "${paths_to_delete[@]}"; do
-            if [[ -e "$path" ]]; then
-                if $DRY_RUN; then
-                    log_action "Remove $path"
-                else
-                    rm -rf "$path" 2>/dev/null && {
-                        log_info "Removed: $path"
-                    } || log_error "Failed to remove: $path"
-                fi
-                ((ITEMS_REMOVED++))
-            fi
-        done
-    else
-        echo ""
-        echo "Individual cleanup options:"
-        echo "  1) Remove Ollama models only"
-        echo "  2) Remove LM Studio models only"
-        echo "  3) Remove Hugging Face cache only"
-        echo "  4) Cancel"
-        echo ""
-        read -p "Select option [1-4]: " choice
-
-        case $choice in
-            1)
-                local ollama_path="${HOME}/.ollama"
-                if [[ -d "$ollama_path" ]]; then
-                    local ollama_size
-                    ollama_size=$(get_dir_size "$ollama_path")
-                    echo "Ollama data: $(format_size $ollama_size)"
-                    if confirm "Remove Ollama models?"; then
-                        rm -rf "$ollama_path"
-                        log_info "Ollama models removed"
-                    fi
-                fi
-                ;;
-            2)
-                local lm_path="${HOME}/.cache/lm-studio"
-                if [[ -d "$lm_path" ]]; then
-                    local lm_size
-                    lm_size=$(get_dir_size "$lm_path")
-                    echo "LM Studio cache: $(format_size $lm_size)"
-                    if confirm "Remove LM Studio cache?"; then
-                        rm -rf "$lm_path"
-                        log_info "LM Studio cache removed"
-                    fi
-                fi
-                ;;
-            3)
-                local hf_path="${HOME}/.cache/huggingface"
-                if [[ -d "$hf_path" ]]; then
-                    local hf_size
-                    hf_size=$(get_dir_size "$hf_path")
-                    echo "Hugging Face cache: $(format_size $hf_size)"
-                    if confirm "Remove Hugging Face cache?"; then
-                        rm -rf "$hf_path"
-                        log_info "Hugging Face cache removed"
-                    fi
-                fi
-                ;;
-            *)
-                echo "Cancelled."
-                ;;
-        esac
-    fi
-}
-
-# =============================================================================
-# Phase 4: Clean Up System Caches
+# Phase 2: Clean Up System Caches
 # =============================================================================
 
 clean_system_caches() {
@@ -596,11 +414,11 @@ clean_system_caches() {
 }
 
 # =============================================================================
-# Phase 5: Disable Background AI Services/Daemons
+# Phase 3: Disable Background AI Services/Daemons
 # =============================================================================
 
 disable_background_services() {
-    print_section "Phase 5: Disable Background AI Services"
+    print_section "Phase 3: Disable Background AI Services"
 
     echo "Checking for AI-related background services..."
     echo ""
@@ -666,7 +484,7 @@ disable_background_services() {
 }
 
 # =============================================================================
-# Phase 6: Final Cleanup & Summary
+# Phase 4: Final Cleanup & Summary
 # =============================================================================
 
 final_cleanup() {
@@ -785,7 +603,6 @@ main() {
     preflight_checks
     disable_apple_intelligence
     remove_apple_intelligence_models
-    remove_local_ai_models
     clean_system_caches
     disable_background_services
     final_cleanup
