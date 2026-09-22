@@ -87,30 +87,48 @@ Also seen earlier (may already be gone): `UAF_FM_GenerativeModels`, `UAF_FM_Visu
 
 ---
 
-## Open issues (file these first when continuing work)
+## Open issues
 
-| # | Title |
-|---|--------|
-| 1 | `mount -uw /` fails Permission denied (66) despite SIP + auth-root disabled |
-| 2 | `.AssetData` returns EROFS on writable Data volume |
-| 3 | Partial deletion: 15 GB → 4.1 GB, rest Resource busy / Directory not empty |
-| 4 | `AI_PATHS` incomplete — misses most `UAF_*` dirs |
-| 5 | AssetsV2 firmlink: models on Data volume, not System snapshot |
-| 6 | Remove leftover test files; fix stale header URL; phase label cleanup |
+| # | Title | State |
+|---|--------|--------|
+| 1 | `mount -uw /` fails Permission denied (66) despite SIP + auth-root disabled | open |
+| 2 | `.AssetData` returns EROFS on writable Data volume | open |
+| 3 | Partial deletion: 15 GB → ~4.1 GB, rest Resource busy / Directory not empty | open |
+| 4 | `AI_PATHS` incomplete — misses most `UAF_*` dirs | **closed** (dynamic glob) |
+| 5 | AssetsV2 firmlink: models on Data volume | **closed** (script targets Data path) |
+| 6 | Leftover test files; stale header URL; phase labels | **closed** |
+| 7 | EROFS follows `.AssetData` inode — `mv` does not unlock deletion | open |
 
----
+### Latest research (issue #7)
+
+- `mv .AssetData /private/tmp/...` **succeeds**, but write/unlink **inside** the tree still EROFS → protection is **per-inode**, not path-based.
+- **All** remaining `.AssetData` dirs under AssetsV2 are EROFS (including non-UAF like PKITrustStore).
+- Parent `.asset/` is writable; `open(O_RDWR)` on files works; `unlink`/`truncate`/`mkdir` fail EROFS.
+- `.AssetData` dir `nlink` is 4–29; files `nlink=1`.
+- AssetsV2 has xattr `com.apple.rootless: MobileAsset`; stripping xattrs does not clear EROFS.
+- Data volume has **no** APFS snapshots; sealed snapshot is only on System (`disk3s1s1`).
+- Asset build xattrs say `26A5416b` while OS is `26A428` (possible build skew).
+
+## Script fixes already landed
+
+- Dynamic `com_apple_MobileAsset_UAF_*` scan via `collect_ai_model_paths()` / `assets_v2_roots()` (Data path first).
+- `chflags -R norestricted,noschg,nouchg` before system `rm`.
+- Absolute `/sbin/mount -uw /` for remount.
+- Kill MobileAsset-related daemons before delete.
+- Phase labels 1–5; header URL; `.write_test*` cleanup.
+- Failure blurb points at EROFS / Recovery (issues #2/#3/#7).
 
 ## Recommended next steps for an agent
 
-1. **Unblock `.AssetData` (issues #2 / #3)** — highest value. Ideas to try:
-   - Boot Recovery → delete assets while Data volume is unmounted from the running system (no firmlink/NFS-style locks).
-   - After a clean reboot with auth-root disabled, retest `mount -uw /` and full-tree delete.
-   - Investigate APFS “sealed / restricted / rootless” xattrs and MobileAsset-specific directory flags more deeply.
-   - Confirm whether `nsurlsessiond` / MobileAsset daemons recreate or pin `.AssetData` immediately after delete.
-2. **Fix script** — dynamic glob of `com_apple_MobileAsset_UAF_*` on the Data path (issues #4 / #5); better error messages distinguishing snapshot-RO vs EROFS.
-3. **Hygiene** — delete `.write_test*`; fix header URL; align phase numbers in `cleanup.sh` (issue #6).
-4. **Docs** — update README SIP section with firmlink + `.AssetData` limitations and real macOS 27 findings.
-5. **Security posture** — remind user to re-enable SIP + authenticated-root + FileVault when finished.
+1. **Unblock `.AssetData` (issues #2 / #3 / #7)** — highest value.
+   - Document/automate Recovery-mode `rm` on the Data volume mount.
+   - Investigate why `com.apple.rootless: MobileAsset` + EROFS applies to `.AssetData` only.
+   - Test whether deleting the sealed System snapshot (auth-root disabled) changes behavior.
+   - Compare with a Mac that never enabled Apple Intelligence.
+2. **Recovery helper** — add optional script/README path that prints exact Recovery `rm` lines for discovered UAF dirs.
+3. **Re-test `mount -uw /`** after a clean reboot with auth-root disabled (still exit 66 as of last test).
+4. **Security posture** — re-enable SIP + authenticated-root + FileVault when finished.
+5. Do not claim full 15 GB until issue #7 is solved.
 
 ---
 

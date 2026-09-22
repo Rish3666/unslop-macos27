@@ -71,12 +71,12 @@ Disables via `defaults write` commands:
 - Siri on lock screen
 
 ### Phase 2: Remove Apple Intelligence Models
-Deletes Apple's on-device AI model files:
-- `/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_GenerativeModels`
-- `/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_Visual`
+Dynamically finds all `com_apple_MobileAsset_UAF_*` directories under every AssetsV2 root (Data volume first), plus user caches:
+- `/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_UAF_*`
+- `/System/Library/AssetsV2/com_apple_MobileAsset_UAF_*`
 - `~/Library/Caches/com.apple.intelligence`
 - `~/Library/Caches/com.apple.siri`
-- Other system-level AI assets
+- Clears `restricted` / `schg` flags before `rm`
 
 ### Phase 3: Clean System Caches
 Removes AI-related caches:
@@ -91,7 +91,13 @@ Removes AI-related caches:
 
 ## System Integrity Protection (SIP) & Recovery
 
-Apple Intelligence model files live on the sealed system volume. To delete them you may need to disable protections in Recovery Mode:
+On macOS 27, Apple Intelligence assets live under `AssetsV2`, which is **firmlinked to the Data volume** — not only on the sealed System snapshot. The script prefers:
+
+```text
+/System/Volumes/Data/System/Library/AssetsV2/
+```
+
+If SIP and Authenticated Root are enabled, disable them in Recovery first:
 
 1. Script detects SIP and/or Authenticated Root status
 2. Asks if you want guided instructions
@@ -132,7 +138,25 @@ csrutil authenticated-root disable
 reboot
 ```
 
-After reboot, run `./cleanup.sh` again. It will remount the system volume writable and delete the model files.
+After reboot, run `./cleanup.sh` again. It will attempt to remount the system volume writable and delete the model files.
+
+### Stuck `.AssetData` (EROFS) — known limitation
+
+Some asset subtrees named `.AssetData` return **Read-only file system** even when:
+
+- SIP and Authenticated Root are both disabled
+- The Data volume is mounted read-write
+- The parent `.asset/` directory is writable
+- The tree is `mv`'d elsewhere (EROFS follows the inode)
+
+In that case, delete from **Recovery Terminal** (Data volume mounted), for example:
+
+```bash
+# Find your Data volume mount in Recovery (diskutil list / ls /Volumes)
+rm -rf /Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_UAF_*
+```
+
+Track progress in issues [#1](https://github.com/Rish3666/unslop-macos27/issues/1), [#2](https://github.com/Rish3666/unslop-macos27/issues/2), [#7](https://github.com/Rish3666/unslop-macos27/issues/7).
 
 **Important:** Re-enable protections when done (boot back to Recovery):
 ```bash
@@ -169,7 +193,8 @@ sudo ./cleanup.sh
 - SIP may be enabled -- the script will guide you through disabling it
 - Authenticated Root may be enabled -- system volume is sealed; disable in Recovery
 - FileVault may block authenticated-root -- decrypt temporarily in Recovery (see SIP section above)
-- After fixes, re-run `./cleanup.sh` (it will remount the volume writable)
+- **`.AssetData` EROFS**: some model subtrees stay read-only even with SIP off (see SIP section / issues #2, #7) -- delete those from Recovery
+- After fixes, re-run `./cleanup.sh` (it will try to remount the volume writable)
 
 **Want to restore Apple Intelligence?**
 1. System Settings > Apple Intelligence & Siri
