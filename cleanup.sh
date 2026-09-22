@@ -152,79 +152,129 @@ confirm() {
 # =============================================================================
 
 SIP_DISABLED_BY_SCRIPT=false
+ROOT_WRITABLE=false
+
+get_sip_status() {
+    csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown"
+}
+
+get_auth_root_status() {
+    csrutil authenticated-root status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown"
+}
+
+is_root_writable() {
+    local opts
+    opts=$(mount | awk '$3=="/" {print $4}')
+    if [[ "$opts" == *"rw"* ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+try_mount_writable() {
+    if is_root_writable; then
+        ROOT_WRITABLE=true
+        return 0
+    fi
+    log_info "Remounting system volume as writable..."
+    if sudo mount -uw / 2>/dev/null || sudo mount -t apfs -o update,rw / 2>/dev/null; then
+        if is_root_writable; then
+            ROOT_WRITABLE=true
+            log_info "System volume is now writable."
+            return 0
+        fi
+    fi
+    ROOT_WRITABLE=false
+    log_warn "Could not remount system volume as writable."
+    return 1
+}
+
+print_recovery_instructions() {
+    local need_sip="$1"
+    local need_auth="$2"
+
+    echo ""
+    echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${CYAN}║  INSTRUCTIONS - Follow these steps in Recovery Mode        ║${NC}"
+    echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${BOLD}Step 1: Boot into Recovery Mode${NC}"
+    echo ""
+    echo "  Apple Silicon Macs (M1, M2, M3, M4, etc.):"
+    echo "    1. Shut down your Mac completely"
+    echo "    2. Press and HOLD the power button"
+    echo "    3. Keep holding until you see 'Loading startup options...'"
+    echo "    4. Click 'Options' then 'Continue'"
+    echo ""
+    echo "  Intel Macs:"
+    echo "    1. Restart your Mac"
+    echo "    2. Immediately hold Cmd+R"
+    echo "    3. Release when you see the Apple logo or spinning globe"
+    echo ""
+    echo -e "${BOLD}Step 2: Open Terminal in Recovery Mode${NC}"
+    echo ""
+    echo "    1. At the top menu bar, click 'Utilities'"
+    echo "    2. Select 'Terminal'"
+    echo ""
+    echo -e "${BOLD}Step 3: Run these commands in Recovery Terminal${NC}"
+    echo ""
+    if [[ "$need_sip" == "true" ]]; then
+        echo "    First, disable SIP:"
+        echo ""
+        echo -e "      ${GREEN}csrutil disable${NC}"
+        echo ""
+        echo "    You should see: 'Successfully disabled System Integrity Protection'"
+        echo ""
+    fi
+    if [[ "$need_auth" == "true" ]]; then
+        echo "    Then, disable Authenticated Root (required to modify system volume):"
+        echo ""
+        echo -e "      ${GREEN}csrutil authenticated-root disable${NC}"
+        echo ""
+        echo "    You should see: 'Successfully disabled Authenticated Root'"
+        echo ""
+    fi
+    echo -e "${BOLD}Step 4: Restart your Mac${NC}"
+    echo ""
+    echo "    Type this command and press Enter:"
+    echo ""
+    echo -e "      ${GREEN}reboot${NC}"
+    echo ""
+    echo -e "${BOLD}Step 5: Run this script again${NC}"
+    echo ""
+    echo "    After your Mac restarts, run:"
+    echo ""
+    echo -e "      ${GREEN}./cleanup.sh${NC}"
+    echo ""
+    echo "    The script will remount the system volume as writable and"
+    echo "    remove the Apple Intelligence model files."
+    echo ""
+    echo -e "${BOLD}Step 6: Re-enable SIP when done (IMPORTANT!)${NC}"
+    echo ""
+    echo "    After cleanup completes, boot into Recovery Mode again"
+    echo "    and run:"
+    echo ""
+    echo -e "      ${GREEN}csrutil enable${NC}"
+    if [[ "$need_auth" == "true" ]]; then
+        echo -e "      ${GREEN}csrutil authenticated-root enable${NC}"
+    fi
+    echo ""
+    echo "    Then restart your Mac."
+    echo ""
+}
 
 handle_sip() {
-    SIP_STATUS=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
+    SIP_STATUS=$(get_sip_status)
+    AUTH_STATUS=$(get_auth_root_status)
 
     if [[ "$SIP_STATUS" == "enabled" ]]; then
         log_warn "System Integrity Protection (SIP) is ENABLED"
         log_warn "Apple Intelligence system models (5-15 GB) CANNOT be removed."
         echo ""
-        echo -e "${BOLD}${YELLOW}  ┌──────────────────────────────────────────────────────────────┐${NC}"
-        echo -e "${BOLD}${YELLOW}  │  SIP protects system files from modification.              │${NC}"
-        echo -e "${BOLD}${YELLOW}  │  To fully remove Apple Intelligence, SIP must be disabled. │${NC}"
-        echo -e "${BOLD}${YELLOW}  │  This requires restarting into Recovery Mode.              │${NC}"
-        echo -e "${BOLD}${YELLOW}  └──────────────────────────────────────────────────────────────┘${NC}"
-        echo ""
 
-        if confirm "Disable SIP now? (will restart into Recovery Mode)"; then
-            echo ""
-            echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${BOLD}${CYAN}║  INSTRUCTIONS - Follow these steps in Recovery Mode        ║${NC}"
-            echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
-            echo ""
-            echo -e "${BOLD}Step 1: Boot into Recovery Mode${NC}"
-            echo ""
-            echo "  Apple Silicon Macs (M1, M2, M3, M4, etc.):"
-            echo "    1. Shut down your Mac completely"
-            echo "    2. Press and HOLD the power button"
-            echo "    3. Keep holding until you see 'Loading startup options...'"
-            echo "    4. Click 'Options' then 'Continue'"
-            echo ""
-            echo "  Intel Macs:"
-            echo "    1. Restart your Mac"
-            echo "    2. Immediately hold Cmd+R"
-            echo "    3. Release when you see the Apple logo or spinning globe"
-            echo ""
-            echo -e "${BOLD}Step 2: Open Terminal in Recovery Mode${NC}"
-            echo ""
-            echo "    1. At the top menu bar, click 'Utilities'"
-            echo "    2. Select 'Terminal'"
-            echo ""
-            echo -e "${BOLD}Step 3: Disable SIP in Terminal${NC}"
-            echo ""
-            echo "    Type this command and press Enter:"
-            echo ""
-            echo -e "      ${GREEN}csrutil disable${NC}"
-            echo ""
-            echo "    You should see: 'Successfully disabled System Integrity Protection'"
-            echo ""
-            echo -e "${BOLD}Step 4: Restart your Mac${NC}"
-            echo ""
-            echo "    Type this command and press Enter:"
-            echo ""
-            echo -e "      ${GREEN}reboot${NC}"
-            echo ""
-            echo -e "${BOLD}Step 5: Run this script again${NC}"
-            echo ""
-            echo "    After your Mac restarts, run:"
-            echo ""
-            echo -e "      ${GREEN}./cleanup.sh${NC}"
-            echo ""
-            echo -e "${BOLD}Step 6: Re-enable SIP when done (IMPORTANT!)${NC}"
-            echo ""
-            echo "    After cleanup completes, re-enable SIP:"
-            echo "    Boot into Recovery Mode (same as Step 1)"
-            echo "    Open Terminal, then type:"
-            echo ""
-            echo -e "      ${GREEN}csrutil enable${NC}"
-            echo ""
-            echo "    Then restart your Mac."
-            echo ""
-            echo -e "${YELLOW}  NOTE: After you return from Recovery Mode with SIP disabled,${NC}"
-            echo -e "${YELLOW}  run ./cleanup.sh again to finish removing the files.${NC}"
-            echo ""
-
+        if confirm "Disable SIP and Authenticated Root? (shows Recovery Mode instructions)"; then
+            print_recovery_instructions "true" "true"
             echo -e "${BOLD}${CYAN}Press Enter when you are ready to restart your Mac manually.${NC}"
             echo -e "${CYAN}Remember: Hold Cmd+R (Intel) or power button (Apple Silicon).${NC}"
             read -r
@@ -234,9 +284,28 @@ handle_sip() {
         echo ""
         log_info "Continuing with SIP enabled. Some files will not be removed."
         log_info "You can re-run this script after disabling SIP manually."
+    elif [[ "$AUTH_STATUS" == "enabled" ]]; then
+        log_warn "SIP is disabled, but Authenticated Root is ENABLED"
+        log_warn "The system volume is sealed/read-only. Files cannot be removed yet."
+        echo ""
+
+        if confirm "Disable Authenticated Root? (shows Recovery Mode instructions)"; then
+            print_recovery_instructions "false" "true"
+            echo -e "${BOLD}${CYAN}Press Enter when you are ready to restart your Mac manually.${NC}"
+            echo -e "${CYAN}Remember: Hold Cmd+R (Intel) or power button (Apple Silicon).${NC}"
+            read -r
+            exit 0
+        fi
+
+        echo ""
+        log_info "Continuing. Files on the system volume may not be removable."
     else
-        log_info "SIP is disabled - full cleanup possible."
+        log_info "SIP is disabled."
+        log_info "Authenticated Root is disabled."
     fi
+
+    # Try to remount system volume as writable
+    try_mount_writable || true
 }
 
 preflight_checks() {
@@ -363,21 +432,54 @@ remove_apple_intelligence_models() {
     echo -e "${BOLD}Total Apple Intelligence data: $(format_size $total_size)${NC}"
 
     if confirm "Remove these Apple Intelligence files?"; then
+        # Ensure system volume is writable before attempting system deletes
+        local has_system_paths=false
+        for path in "${AI_PATHS[@]}"; do
+            if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
+                has_system_paths=true
+                break
+            fi
+        done
+
+        if $has_system_paths && ! $DRY_RUN; then
+            try_mount_writable || true
+        fi
+
         for path in "${AI_PATHS[@]}"; do
             if [[ -e "$path" ]]; then
                 if $DRY_RUN; then
                     log_action "Remove $path"
                 else
                     if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
-                        sudo rm -rf "$path" 2>/dev/null && {
+                        local err
+                        err=$(sudo rm -rf "$path" 2>&1) && {
                             log_info "Removed $path"
-                            SPACE_FREED=$((SPACE_FREED + $(get_dir_size "$path")))
-                        } || log_error "Failed to remove $path (may require SIP disabled)"
+                        } || {
+                            if [[ -n "$err" ]]; then
+                                log_error "Failed to remove $path"
+                                echo "         $err"
+                            else
+                                log_error "Failed to remove $path"
+                                if [[ "$SIP_STATUS" == "enabled" ]]; then
+                                    echo "         SIP is enabled - disable it in Recovery Mode first."
+                                elif [[ "$AUTH_STATUS" == "enabled" ]]; then
+                                    echo "         Authenticated Root is enabled - disable it in Recovery Mode:"
+                                    echo "           csrutil authenticated-root disable"
+                                elif ! is_root_writable; then
+                                    echo "         System volume is read-only. Try: sudo mount -uw /"
+                                else
+                                    echo "         Try: sudo rm -rf \"$path\""
+                                fi
+                            fi
+                        }
                     else
-                        rm -rf "$path" 2>/dev/null && {
+                        local err
+                        err=$(rm -rf "$path" 2>&1) && {
                             log_info "Removed $path"
-                            SPACE_FREED=$((SPACE_FREED + $(get_dir_size "$path")))
-                        } || log_error "Failed to remove $path"
+                        } || {
+                            log_error "Failed to remove $path"
+                            [[ -n "$err" ]] && echo "         $err"
+                        }
                     fi
                 fi
                 ((ITEMS_REMOVED++))
@@ -555,27 +657,29 @@ print_summary() {
         fi
     fi
 
-    # Check if SIP was the issue
-    SIP_STATUS=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
-    if [[ "$SIP_STATUS" == "enabled" ]] && [[ $ERRORS -gt 0 ]]; then
+    # Check if SIP/Auth Root/read-only volume was the issue
+    SIP_STATUS=$(get_sip_status)
+    AUTH_STATUS=$(get_auth_root_status)
+    if [[ $ERRORS -gt 0 ]]; then
         echo ""
         echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}${BOLD}║  SOME FILES COULD NOT BE REMOVED - SIP IS THE REASON     ║${NC}"
+        echo -e "${RED}${BOLD}║  SOME FILES COULD NOT BE REMOVED                           ║${NC}"
         echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
         echo ""
-        echo -e "${BOLD}Re-run this script to get the SIP disable prompt:${NC}"
+        if [[ "$SIP_STATUS" == "enabled" ]]; then
+            echo -e "${BOLD}Cause: SIP is still enabled.${NC}"
+        elif [[ "$AUTH_STATUS" == "enabled" ]]; then
+            echo -e "${BOLD}Cause: Authenticated Root is still enabled (system volume is sealed).${NC}"
+        elif ! is_root_writable; then
+            echo -e "${BOLD}Cause: System volume is mounted read-only.${NC}"
+            echo "  Fix: sudo mount -uw /"
+        else
+            echo -e "${BOLD}Cause: Permission or file system error (see messages above).${NC}"
+        fi
+        echo ""
+        echo -e "${BOLD}Re-run this script to get guided instructions:${NC}"
         echo ""
         echo "    ./cleanup.sh"
-        echo ""
-        echo -e "${BOLD}Or disable SIP manually:${NC}"
-        echo ""
-        echo "  1. Restart your Mac"
-        echo "  2. Hold Cmd+R (Intel) or power button (Apple Silicon)"
-        echo "  3. Open Terminal from Utilities menu"
-        echo "  4. Run: csrutil disable"
-        echo "  5. Restart your Mac"
-        echo "  6. Run: ./cleanup.sh"
-        echo "  7. Re-enable SIP when done: sudo csrutil enable"
         echo ""
         echo -e "${YELLOW}NOTE: Disabling SIP reduces your Mac's security.${NC}"
         echo -e "${YELLOW}Re-enable it as soon as you finish the cleanup.${NC}"
@@ -584,6 +688,7 @@ print_summary() {
         echo -e "${BOLD}Important notes:${NC}"
         echo "  1. Restart your Mac for all changes to take effect."
         echo "  2. Apple Intelligence may re-enable after system updates."
+        echo "  3. Re-enable SIP if you disabled it: boot to Recovery and run csrutil enable"
     fi
 
     echo ""
