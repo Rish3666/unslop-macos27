@@ -178,7 +178,10 @@ try_mount_writable() {
         return 0
     fi
     log_info "Remounting system volume as writable..."
-    if sudo mount -uw / 2>/dev/null || sudo mount -t apfs -o update,rw / 2>/dev/null; then
+    # Prefer absolute paths; bare "mount" via sudo can fail to resolve (exit 127)
+    if sudo /sbin/mount -uw / 2>/dev/null \
+        || sudo /sbin/mount -t apfs -o update,rw /dev/disk3s1s1 / 2>/dev/null \
+        || sudo mount -uw / 2>/dev/null; then
         if is_root_writable; then
             ROOT_WRITABLE=true
             log_info "System volume is now writable."
@@ -187,6 +190,8 @@ try_mount_writable() {
     fi
     ROOT_WRITABLE=false
     log_warn "Could not remount system volume as writable."
+    log_warn "If SIP and Authenticated Root are both disabled, reboot and retry."
+    log_warn "Stuck .AssetData trees may need Recovery Mode deletion (EROFS follows inode)."
     return 1
 }
 
@@ -667,7 +672,10 @@ remove_apple_intelligence_models() {
 
     if [[ $failed -gt 0 ]]; then
         log_warn "$failed path(s) incomplete — often .AssetData EROFS (issues #2/#3)."
-        log_warn "Re-run after killing MobileAsset daemons, or delete from Recovery."
+        log_warn "EROFS follows the directory inode: mv to /tmp does NOT help."
+        log_warn "Recovery Mode fix (Data volume mounted in Recovery):"
+        log_warn "  rm -rf /Volumes/<Data>/System/Library/AssetsV2/com_apple_MobileAsset_UAF_*"
+        log_warn "Or reboot once with SIP+auth-root disabled, then re-run this script."
     fi
 }
 
