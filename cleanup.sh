@@ -194,6 +194,12 @@ print_recovery_instructions() {
     local need_sip="$1"
     local need_auth="$2"
 
+    # Check if FileVault is likely enabled (affects authenticated-root disable)
+    local filevault_on=false
+    if command -v fdesetup >/dev/null 2>&1 && fdesetup status 2>/dev/null | grep -qi "on"; then
+        filevault_on=true
+    fi
+
     echo ""
     echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BOLD}${CYAN}║  INSTRUCTIONS - Follow these steps in Recovery Mode        ║${NC}"
@@ -220,19 +226,77 @@ print_recovery_instructions() {
     echo -e "${BOLD}Step 3: Run these commands in Recovery Terminal${NC}"
     echo ""
     if [[ "$need_sip" == "true" ]]; then
-        echo "    First, disable SIP:"
+        echo "    a) Disable SIP:"
         echo ""
         echo -e "      ${GREEN}csrutil disable${NC}"
         echo ""
-        echo "    You should see: 'Successfully disabled System Integrity Protection'"
+        echo "      You should see: 'Successfully disabled System Integrity Protection'"
         echo ""
     fi
     if [[ "$need_auth" == "true" ]]; then
-        echo "    Then, disable Authenticated Root (required to modify system volume):"
+        echo "    b) Disable Authenticated Root (required to modify system volume):"
         echo ""
         echo -e "      ${GREEN}csrutil authenticated-root disable${NC}"
         echo ""
-        echo "    You should see: 'Successfully disabled Authenticated Root'"
+        if $filevault_on; then
+            echo "      If this fails with 'FileVault must be disabled',"
+            echo "      follow the FileVault steps below first, then re-run it."
+            echo ""
+            echo -e "${BOLD}${YELLOW}      --- FileVault steps (only if that error appears) ---${NC}"
+            echo ""
+            echo "      fdesetup is NOT available in Recovery. Use diskutil:"
+            echo ""
+            echo "      1. List APFS volumes and note the volume IDs"
+            echo "         (e.g. disk3s1 = System, disk3s5 = Data):"
+            echo ""
+            echo -e "        ${GREEN}diskutil apfs list${NC}"
+            echo ""
+            echo "      2. Find your local volume owner UUID:"
+            echo ""
+            echo -e "        ${GREEN}diskutil apfs listcryptousers disk3s1${NC}"
+            echo ""
+            echo "         Copy the UUID like:"
+            echo "         80A22EE9-2149-42C4-B86E-A5D78A40E109"
+            echo ""
+            echo "      3. Unlock the System volume:"
+            echo ""
+            echo -e "        ${GREEN}diskutil apfs unlockVolume disk3s1 -user <YOUR_UUID>${NC}"
+            echo ""
+            echo "      4. Unlock the Data volume:"
+            echo ""
+            echo -e "        ${GREEN}diskutil apfs unlockVolume disk3s5 -user <YOUR_UUID>${NC}"
+            echo ""
+            echo "      5. Decrypt the Data volume:"
+            echo ""
+            echo -e "        ${GREEN}diskutil apfs decryptVolume disk3s5 -user <YOUR_UUID>${NC}"
+            echo ""
+            echo "         (May report: Decryption has likely completed due to AES hardware)"
+            echo ""
+            echo "      6. Verify FileVault is off:"
+            echo ""
+            echo -e "        ${GREEN}diskutil apfs list${NC}"
+            echo ""
+            echo "         Data volume should show: FileVault: No"
+            echo ""
+            echo "      7. Then re-run:"
+            echo ""
+            echo -e "        ${GREEN}csrutil authenticated-root disable${NC}"
+            echo ""
+        else
+            echo "      You should see: 'Successfully disabled Authenticated Root'"
+            echo ""
+            echo "      If this fails with 'FileVault must be disabled',"
+            echo "      you must temporarily decrypt your volume first:"
+            echo ""
+            echo "        1. diskutil apfs list          # find volume IDs"
+            echo "        2. diskutil apfs listcryptousers disk3s1   # get owner UUID"
+            echo "        3. diskutil apfs unlockVolume disk3s1 -user <UUID>"
+            echo "        4. diskutil apfs unlockVolume disk3s5 -user <UUID>"
+            echo "        5. diskutil apfs decryptVolume disk3s5 -user <UUID>"
+            echo "        6. csrutil authenticated-root disable"
+            echo ""
+        fi
+        echo "      Otherwise you should see: 'Successfully disabled Authenticated Root'"
         echo ""
     fi
     echo -e "${BOLD}Step 4: Restart your Mac${NC}"
@@ -258,6 +322,13 @@ print_recovery_instructions() {
     echo -e "      ${GREEN}csrutil enable${NC}"
     if [[ "$need_auth" == "true" ]]; then
         echo -e "      ${GREEN}csrutil authenticated-root enable${NC}"
+    fi
+    if $filevault_on; then
+        echo ""
+        echo "    Also re-enable FileVault (if you decrypted it):"
+        echo ""
+        echo "      Open System Settings > Privacy & Security > FileVault"
+        echo "      Turn FileVault back on after rebooting normally."
     fi
     echo ""
     echo "    Then restart your Mac."

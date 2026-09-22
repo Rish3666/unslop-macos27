@@ -89,18 +89,57 @@ Removes AI-related caches:
 - Kills running AI processes (siri, assistantd, SiriNCService, etc.)
 - Unloads Siri launch agents
 
-## System Integrity Protection (SIP)
+## System Integrity Protection (SIP) & Recovery
 
-Apple Intelligence model files are protected by SIP. The script will prompt you to disable SIP if needed:
+Apple Intelligence model files live on the sealed system volume. To delete them you may need to disable protections in Recovery Mode:
 
-1. Script detects SIP is enabled
-2. Asks if you want to disable it
-3. Provides step-by-step instructions for your Mac type (Intel or Apple Silicon)
-4. Offers to restart into Recovery Mode automatically
+1. Script detects SIP and/or Authenticated Root status
+2. Asks if you want guided instructions
+3. Provides step-by-step Recovery Mode steps for your Mac type (Intel or Apple Silicon)
+4. You restart manually into Recovery Mode
 
-After disabling SIP in Recovery Mode, restart and run the script again to delete the model files.
+### In Recovery Terminal
 
-**Important:** Re-enable SIP when done: `sudo csrutil enable`
+```bash
+csrutil disable
+csrutil authenticated-root disable
+reboot
+```
+
+### If authenticated-root fails: "FileVault must be disabled"
+
+`fdesetup` is not available in Recovery. Use APFS tools instead:
+
+```bash
+# 1. List volumes (note System e.g. disk3s1, Data e.g. disk3s5)
+diskutil apfs list
+
+# 2. Get local volume owner UUID
+diskutil apfs listcryptousers disk3s1
+
+# 3. Unlock System and Data volumes
+diskutil apfs unlockVolume disk3s1 -user <UUID>
+diskutil apfs unlockVolume disk3s5 -user <UUID>
+
+# 4. Decrypt Data volume
+diskutil apfs decryptVolume disk3s5 -user <UUID>
+
+# 5. Verify FileVault: No, then disable authenticated-root
+diskutil apfs list
+csrutil authenticated-root disable
+
+# 6. Restart
+reboot
+```
+
+After reboot, run `./cleanup.sh` again. It will remount the system volume writable and delete the model files.
+
+**Important:** Re-enable protections when done (boot back to Recovery):
+```bash
+csrutil enable
+csrutil authenticated-root enable
+```
+Then turn FileVault back on in System Settings > Privacy & Security.
 
 ## Safety
 
@@ -128,7 +167,9 @@ sudo ./cleanup.sh
 
 **Files not being removed**
 - SIP may be enabled -- the script will guide you through disabling it
-- Some files may be in use -- restart and try again
+- Authenticated Root may be enabled -- system volume is sealed; disable in Recovery
+- FileVault may block authenticated-root -- decrypt temporarily in Recovery (see SIP section above)
+- After fixes, re-run `./cleanup.sh` (it will remount the volume writable)
 
 **Want to restore Apple Intelligence?**
 1. System Settings > Apple Intelligence & Siri
