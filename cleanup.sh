@@ -14,7 +14,7 @@
 # IMPORTANT: This script modifies system settings and deletes files.
 #            Always use --dry-run first to preview changes.
 #
-# GitHub: https://github.com/yourusername/ai-cleanup-macos
+# GitHub: https://github.com/Rish3666/unslop-macos27
 # =============================================================================
 
 set -euo pipefail
@@ -398,10 +398,18 @@ preflight_checks() {
     df -h / | tail -1 | awk '{print "  Used: "$3" / Free: "$4" / Total: "$2}'
     echo ""
 
-    # Check for Apple Intelligence storage
-    AI_STORAGE=$(find /System/Library/AssetsV2/ -maxdepth 1 -name "*com_apple*" -type d 2>/dev/null | while read dir; do
-        du -sk "$dir" 2>/dev/null | cut -f1
-    done | paste -sd+ - | bc 2>/dev/null || echo "0")
+    # Check for Apple Intelligence storage (dynamic UAF_* scan on all AssetsV2 roots)
+    AI_STORAGE=0
+    while IFS= read -r assets_root; do
+        [[ -z "$assets_root" ]] && continue
+        for dir in "$assets_root"/com_apple_MobileAsset_UAF_*; do
+            if [[ -d "$dir" ]]; then
+                local kb
+                kb=$(get_dir_size "$dir")
+                AI_STORAGE=$((AI_STORAGE + kb))
+            fi
+        done
+    done < <(assets_v2_roots)
 
     if [[ "$AI_STORAGE" -gt 0 ]]; then
         log_info "Apple Intelligence models found: $(format_size $AI_STORAGE)"
@@ -465,15 +473,86 @@ disable_apple_intelligence() {
 # Phase 2: Remove Apple Intelligence Model Files
 # =============================================================================
 
+# AssetsV2 is firmlinked to the Data volume on macOS 27. Prefer the Data
+# path when the sealed root snapshot is read-only (see AGENTS.md / issues #1, #5).
+assets_v2_roots() {
+    local roots=()
+    local r
+    for r in \
+        "/System/Volumes/Data/System/Library/AssetsV2" \
+        "/System/Library/AssetsV2" \
+        "/Library/Apple/System/Library/AssetsV2"; do
+        if [[ -d "$r" ]]; then
+            roots+=("$r")
+        fi
+    done
+    printf '%s\n' "${roots[@]}"
+}
+
+# Collect Apple Intelligence / Siri UAF model dirs (dynamic glob, not hardcoded).
+collect_ai_model_paths() {
+    local roots root d
+    local -a found=()
+
+    while IFS= read -r root; do
+        [[ -z "$root" ]] && continue
+        # Shellcheck: glob intentionally unquoted for *
+        for d in "$root"/com_apple_MobileAsset_UAF_*; do
+            [[ -d "$d" ]] && found+=("$d")
+        done
+        # Legacy / narrower names if present without UAF_ prefix
+        for d in \
+            "$root/com_apple_MobileAsset_UAF_FM_GenerativeModels" \
+            "$root/com_apple_MobileAsset_UAF_FM_Visual"; do
+            [[ -d "$d" ]] && found+=("$d")
+        done
+    done < <(assets_v2_roots)
+
+    # Dedupe (same path via firmlink roots)
+    if [[ ${#found[@]} -gt 0 ]]; then
+        printf '%s\n' "${found[@]}" | awk '!seen[$0]++'
+    fi
+}
+
+# Clear flags that block deletion on some system assets.
+clear_asset_flags() {
+    local path="$1"
+    if [[ ! -e "$path" ]]; then
+        return 0
+    fi
+    sudo chflags -R norestricted,noschg,nouchg,uchg,hidden "$path" 2>/dev/null || true
+}
+
+explain_system_delete_failure() {
+    local path="$1"
+    if [[ "${SIP_STATUS:-}" == "enabled" ]]; then
+        echo "         SIP is enabled - disable it in Recovery Mode first."
+    elif [[ "${AUTH_STATUS:-}" == "enabled" ]]; then
+        echo "         Authenticated Root is enabled - disable it in Recovery Mode:"
+        echo "           csrutil authenticated-root disable"
+    elif ! is_root_writable; then
+        echo "         Sealed root snapshot is read-only (mount -uw / may fail; see issue #1)."
+        echo "         Data-volume path may still work: /System/Volumes/Data/System/Library/AssetsV2"
+    else
+        echo "         Possible causes: EROFS inside .AssetData (issue #2),"
+        echo "         open handles / Resource busy (issue #3), or missing chflags clear."
+        echo "         Try: sudo chflags -R norestricted,noschg,nouchg \"$path\" && sudo rm -rf \"$path\""
+    fi
+}
+
 remove_apple_intelligence_models() {
     print_section "Phase 2: Remove Apple Intelligence Model Files"
 
-    # Known Apple Intelligence model and cache directories
-    local AI_PATHS=(
-        "/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_GenerativeModels"
-        "/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_Visual"
-        "/Library/Apple/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_GenerativeModels"
-        "/Library/Apple/System/Library/AssetsV2/com_apple_MobileAsset_UAF_FM_Visual"
+    local -a AI_PATHS=()
+    local path size total_size=0
+
+    # Dynamic UAF model directories (Data volume first)
+    while IFS= read -r path; do
+        [[ -n "$path" ]] && AI_PATHS+=("$path")
+    done < <(collect_ai_model_paths)
+
+    # User-level caches / state
+    local user_paths=(
         "$HOME/Library/Caches/com.apple.intelligence"
         "$HOME/Library/Caches/com.apple.siri"
         "$HOME/Library/Caches/com.apple.siri.analytics"
@@ -481,12 +560,31 @@ remove_apple_intelligence_models() {
         "$HOME/Library/Assistant"
         "$HOME/Library/Saved Application State/com.apple.Siri.savedState"
     )
+    AI_PATHS+=("${user_paths[@]}")
 
-    local total_size=0
+    # Diagnostics leftovers from prior runs (issue #6)
+    local leftovers=(
+        "/System/Volumes/Data/System/Library/AssetsV2/.write_test"
+        "/System/Volumes/Data/System/Library/AssetsV2/.write_test2"
+        "/System/Library/AssetsV2/.write_test"
+        "/System/Library/AssetsV2/.write_test2"
+    )
+    if ! $DRY_RUN; then
+        for path in "${leftovers[@]}"; do
+            if [[ -e "$path" ]]; then
+                sudo rm -f "$path" 2>/dev/null || true
+            fi
+        done
+    fi
 
+    if [[ ${#AI_PATHS[@]} -eq 0 ]]; then
+        log_warn "No Apple Intelligence model files found."
+        return
+    fi
+
+    echo "Apple Intelligence model directories:"
     for path in "${AI_PATHS[@]}"; do
         if [[ -e "$path" ]]; then
-            local size
             size=$(get_dir_size "$path")
             total_size=$((total_size + size))
             echo -e "  ${CYAN}Found:${NC} $path"
@@ -502,69 +600,83 @@ remove_apple_intelligence_models() {
     echo ""
     echo -e "${BOLD}Total Apple Intelligence data: $(format_size $total_size)${NC}"
 
-    if confirm "Remove these Apple Intelligence files?"; then
-        # Ensure system volume is writable before attempting system deletes
-        local has_system_paths=false
-        for path in "${AI_PATHS[@]}"; do
-            if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
-                has_system_paths=true
-                break
-            fi
-        done
+    if ! confirm "Remove these Apple Intelligence files?"; then
+        return
+    fi
 
-        if $has_system_paths && ! $DRY_RUN; then
-            try_mount_writable || true
+    local has_system_paths=false
+    for path in "${AI_PATHS[@]}"; do
+        if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
+            has_system_paths=true
+            break
+        fi
+    done
+
+    if $has_system_paths && ! $DRY_RUN; then
+        try_mount_writable || true
+        # Stop daemons that pin MobileAsset files before rm (issue #3)
+        if command -v pkill >/dev/null 2>&1; then
+            local procs=(assistantd mobileassetd mds mds_stores suggestd)
+            for p in "${procs[@]}"; do
+                sudo pkill -9 "$p" 2>/dev/null || true
+            done
+            sleep 1
+        fi
+    fi
+
+    local failed=0
+    for path in "${AI_PATHS[@]}"; do
+        [[ -e "$path" ]] || continue
+
+        if $DRY_RUN; then
+            log_action "Remove $path"
+            ((ITEMS_REMOVED++))
+            continue
         fi
 
-        for path in "${AI_PATHS[@]}"; do
-            if [[ -e "$path" ]]; then
-                if $DRY_RUN; then
-                    log_action "Remove $path"
-                else
-                    if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
-                        local err
-                        err=$(sudo rm -rf "$path" 2>&1) && {
-                            log_info "Removed $path"
-                        } || {
-                            if [[ -n "$err" ]]; then
-                                log_error "Failed to remove $path"
-                                echo "         $err"
-                            else
-                                log_error "Failed to remove $path"
-                                if [[ "$SIP_STATUS" == "enabled" ]]; then
-                                    echo "         SIP is enabled - disable it in Recovery Mode first."
-                                elif [[ "$AUTH_STATUS" == "enabled" ]]; then
-                                    echo "         Authenticated Root is enabled - disable it in Recovery Mode:"
-                                    echo "           csrutil authenticated-root disable"
-                                elif ! is_root_writable; then
-                                    echo "         System volume is read-only. Try: sudo mount -uw /"
-                                else
-                                    echo "         Try: sudo rm -rf \"$path\""
-                                fi
-                            fi
-                        }
-                    else
-                        local err
-                        err=$(rm -rf "$path" 2>&1) && {
-                            log_info "Removed $path"
-                        } || {
-                            log_error "Failed to remove $path"
-                            [[ -n "$err" ]] && echo "         $err"
-                        }
-                    fi
-                fi
-                ((ITEMS_REMOVED++))
+        local needs_sudo=false
+        if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
+            needs_sudo=true
+        fi
+
+        clear_asset_flags "$path"
+
+        local err=""
+        if $needs_sudo; then
+            err=$(sudo rm -rf "$path" 2>&1) || true
+        else
+            err=$(rm -rf "$path" 2>&1) || true
+        fi
+
+        if [[ ! -e "$path" ]]; then
+            log_info "Removed $path"
+            ((ITEMS_REMOVED++))
+        else
+            # Partial delete: tree may be smaller even if not empty
+            local after
+            after=$(get_dir_size "$path")
+            if [[ "$after" -lt "$size" ]] 2>/dev/null; then
+                log_warn "Partially removed $path ($(format_size $after) left)"
             fi
-        done
+            log_error "Failed to fully remove $path"
+            [[ -n "$err" ]] && echo "$err" | head -3 | sed 's/^/         /'
+            explain_system_delete_failure "$path"
+            failed=$((failed + 1))
+        fi
+    done
+
+    if [[ $failed -gt 0 ]]; then
+        log_warn "$failed path(s) incomplete — often .AssetData EROFS (issues #2/#3)."
+        log_warn "Re-run after killing MobileAsset daemons, or delete from Recovery."
     fi
 }
 
 # =============================================================================
-# Phase 2: Clean Up System Caches
+# Phase 3: Clean Up System Caches
 # =============================================================================
 
 clean_system_caches() {
-    print_section "Phase 4: Clean System Caches"
+    print_section "Phase 3: Clean System Caches"
 
     local CACHE_PATHS=(
         "$HOME/Library/Caches/com.apple.Spotlight"
@@ -616,11 +728,11 @@ clean_system_caches() {
 }
 
 # =============================================================================
-# Phase 3: Disable Background AI Services/Daemons
+# Phase 4: Disable Background AI Services/Daemons
 # =============================================================================
 
 disable_background_services() {
-    print_section "Phase 3: Disable Background AI Services"
+    print_section "Phase 4: Disable Background AI Services"
 
     echo "Checking for AI-related background services..."
     echo ""
@@ -686,11 +798,11 @@ disable_background_services() {
 }
 
 # =============================================================================
-# Phase 4: Final Cleanup & Summary
+# Phase 5: Final Cleanup & Summary
 # =============================================================================
 
 final_cleanup() {
-    print_section "Phase 6: Final Cleanup"
+    print_section "Phase 5: Final Cleanup"
 
     if $DRY_RUN; then
         log_info "Dry-run mode - no actual changes made"
