@@ -133,8 +133,28 @@ Also seen earlier (may already be gone): `UAF_FM_GenerativeModels`, `UAF_FM_Visu
 
 Covers: `bash -n` on both scripts, `get_dir_size` (double-count regression),
 `is_root_writable` (rw/read-only regression), `parse_args` flag handling,
-firmlink dedup in `collect_ai_model_paths`, and an integration run of
+firmlink dedup in `collect_ai_model_paths`, UI menu non-TTY fallback (`rc 2` /
+`--force` all-select), `--no-ui` behavior, and an integration run of
 `cleanup.sh --dry-run` with a stubbed `sudo` (exits 0, no system mutation).
+
+## UI architecture (v2.2.0)
+
+- `ui_active()` gates all interactive rendering: false for non-TTY stdout or
+  `--no-ui`. Plain prompts remain functional in every phase.
+- `ui_menu_multiselect` renders an indexed checklist and returns picks via the
+  **global `UI_PICKS`** — never call it via `$(...)`: command substitution
+  makes stdout a pipe and `ui_active()` would always be false on a real TTY.
+  Return codes: 0 selected, 1 nothing selected, 2 UI inactive (fall back to
+  plain `confirm`).
+- `spinner_start/stop` animate scans; the spinner runs as a background job and
+  writes only when `ui_active`. The INT/TERM trap stops it and restores the
+  cursor (`\033[?25h`).
+- `ui_progress_render` draws the deletion progress bar; callers must close the
+  line before printing failures and re-render 100% after partial deletions.
+- bash 3.2 + `set -u`: iterating a possibly-empty array needs a
+  `${#arr[@]} -gt 0` guard (empty expansion is an unbound-variable error).
+- Phase selection (`choose_phase_plan`) flips `RUN_PHASE_*` flags; `main`
+  conditionally runs each phase.
 
 ## Recommended next steps for an agent
 

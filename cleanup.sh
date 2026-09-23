@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-CLEANUP_SCRIPT_VERSION="2.1.0"
+CLEANUP_SCRIPT_VERSION="2.2.0"
 
 # Colors
 RED='\033[0;31m'
@@ -28,18 +28,27 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m' # No Color
 
 # Disable colors when stdout is not a terminal (pipes, files, CI) or when
 # NO_COLOR is set. Without this, ANSI escapes corrupt piped/grepped output.
 if [[ ! -t 1 ]] || [[ -n "${NO_COLOR:-}" ]]; then
-    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' NC=''
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' NC=''
 fi
 
 # Flags
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
+NO_UI=false
+
+# Which phases run (narrowed by ui_phase_select, default: all)
+RUN_PHASE_1=true
+RUN_PHASE_2=true
+RUN_PHASE_3=true
+RUN_PHASE_4=true
+RUN_PHASE_5=true
 
 # Counters
 SPACE_FREED=0
@@ -60,6 +69,9 @@ parse_args() {
             --verbose|-v)
                 VERBOSE=true
                 ;;
+            --no-ui)
+                NO_UI=true
+                ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
@@ -67,6 +79,7 @@ parse_args() {
                 echo "  --dry-run, -n    Preview changes without making them"
                 echo "  --force, -f      Skip confirmation prompts"
                 echo "  --verbose, -v    Show detailed output"
+                echo "  --no-ui          Disable interactive UI (plain prompts only)"
                 echo "  --help, -h       Show this help message"
                 echo ""
                 echo "cleanup.sh v$CLEANUP_SCRIPT_VERSION"
@@ -86,6 +99,26 @@ parse_args() {
 # Helper Functions
 # =============================================================================
 
+# Non-TTY (pipes) or --no-ui: render plain text, skip interactive elements.
+# Every UI decision funnels through ui_active() so phases behave consistently.
+ui_active() {
+    [[ "$NO_UI" == true ]] && return 1
+    [[ -t 1 ]] || return 1
+    return 0
+}
+
+repeat_char() {
+    local ch="$1" n="$2" out="" i
+    for ((i = 0; i < n; i++)); do out+="$ch"; done
+    printf '%s' "$out"
+}
+
+ui_rule()      { printf '%s\n' "$(repeat_char '─' 62)"; }
+ui_rule_heavy() { printf '%s\n' "$(repeat_char '━' 62)"; }
+
+# Dim wrapper — plain text when colors are off.
+dim() { printf '%b' "${DIM:-}${1}${NC:-}"; }
+
 print_header() {
     echo ""
     echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -101,6 +134,161 @@ print_section() {
     echo -e "${BOLD}${BLUE}  $1${NC}"
     echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
+
+# =============================================================================
+# UI Toolkit (interactive; degrades gracefully for pipes / --no-ui)
+# =============================================================================
+
+# Interactive UI is active only when stdout is a TTY and --no-ui is not set.
+# All UI decisions funnel through ui_active() for consistent behavior.
+ui_active() {
+    [[ "$NO_UI" == true ]] && return 1
+    [[ -t 1 ]] || return 1
+    return 0
+}
+
+repeat_char() {
+    local ch="$1" n="$2" out="" i
+    for ((i = 0; i < n; i++)); do out+="$ch"; done
+    printf '%s' "$out"
+}
+
+ui_rule()        { printf '%s\n' "$(repeat_char '─' 62)"; }
+ui_rule_heavy()  { printf '%s\n' "$(repeat_char '━' 62)"; }
+
+# Dim text wrapper — plain passthrough when colors are off.
+dim() { printf '%b' "${DIM:-}${1}${NC:-}"; }
+
+# ---- spinner ---------------------------------------------------------------
+
+SPINNER_PID=""
+SPINNER_LABEL=""
+
+spinner_start() {
+    spinner_stop
+    SPINNER_LABEL="$1"
+    if ! ui_active; then
+        printf '%s\n' "${YELLOW:-}[..]${NC:-} $SPINNER_LABEL"
+        return 0
+    fi
+    ( ui_spinner_loop "$SPINNER_LABEL" ) &
+    SPINNER_PID=$!
+}
+
+spinner_stop() {
+    if [[ -n "$SPINNER_PID" ]]; then
+        kill "$SPINNER_PID" 2>/dev/null || true
+        wait "$SPINNER_PID" 2>/dev/null || true
+        SPINNER_PID=""
+    fi
+    if ui_active; then
+        # CR: clear line + CR; spaces exceed the longest spinner line
+        printf '\r\033[K%s\r' "$(repeat_char ' ' 110)"
+    fi
+}
+
+# Runs as a background job; writes a self-contained animated line.
+ui_spinner_loop() {
+    local label="$1"
+    local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+    local i=0
+    printf '\r\033[?25l'
+    while :; do
+        printf '\r\033[K  %s %s%s%s' "${frames[$((i % 10))]}" "$CYAN" "$label" "$NC"
+        sleep 0.1
+        i=$((i + 1))
+    done
+}
+
+# ---- menus & checklists -----------------------------------------------------
+
+# Multi-select checklist. Renders an indexed list, reads a pick, and stores
+# the chosen indexes ("1 3 4") in the global UI_PICKS. Return codes:
+#   0 = selection made (see UI_PICKS), 1 = nothing selected, 2 = UI inactive
+#   (items printed; caller should fall back to a plain confirm).
+# IMPORTANT: call directly (never via $(...)) — command substitution replaces
+# stdout with a pipe, which would force ui_active() to false on a real TTY.
+#   ui_menu_multiselect "y|n" <label1> <label2> ...
+UI_PICKS=""
+ui_menu_multiselect() {
+    local default_action="$1"; shift
+    local -a items=("$@")
+    local n=${#items[@]}
+    local reply
+    UI_PICKS=""
+
+    if ! ui_active; then
+        local k
+        for k in "${!items[@]}"; do
+            printf '  %2d) %s\n' "$((k + 1))" "${items[$k]}"
+        done
+        if $FORCE; then
+            printf '  %s\n' "--force: selected all $n"
+            UI_PICKS="$(seq 1 "$n" | tr '\n' ' ')"
+            return 0
+        fi
+        return 2   # caller falls back to plain confirm()
+    fi
+
+    local i
+    for i in "${!items[@]}"; do
+        printf "  ${BOLD}%2d)${NC} %s\n" "$((i + 1))" "${items[$i]}"
+    done
+    ui_rule
+    printf '%s\n' "$(dim "Enter numbers to SELECT (e.g. 1 3 5), 'a'=all, 'q'=quit [${default_action}]:")"
+    printf '%s' "> "
+    read -r reply || reply=""
+    reply="${reply:-$default_action}"
+
+    local pick
+    case "$reply" in
+        a|A)
+            UI_PICKS="$(seq 1 "$n" | tr '\n' ' ')"
+            return 0
+            ;;
+        q|Q)
+            echo ""
+            echo "Cancelled by user."
+            exit 0
+            ;;
+        *)
+            pick=""
+            local tok total=0
+            for tok in $reply; do
+                if [[ "$tok" =~ ^[0-9]+$ ]] && [[ "$tok" -ge 1 ]] && [[ "$tok" -le $n ]]; then
+                    pick+="$tok "
+                    total=$((total + 1))
+                fi
+            done
+            if [[ $total -eq 0 ]]; then
+                printf '%s\n' "$(dim "(nothing selected)")"
+                return 1
+            fi
+            UI_PICKS="$pick"
+            return 0
+            ;;
+    esac
+}
+
+# ---- progress bar ------------------------------------------------------------
+
+# Renders "label [██████░░░░] 6/25" style progress on one TTY line.
+# Active only under ui_active(); callers no-op it otherwise.
+ui_progress_render() {
+    local current="$1" total="$2" label="$3"
+    local width=30
+    local filled=$(( current * width / total ))
+    if (( filled > width )); then filled=$width; fi
+    local empty=$(( width - filled ))
+    printf '\r\033[K  %s [%s%s] %d/%d' "$label" \
+        "$(repeat_char '█' "$filled")" "$(repeat_char '░' "$empty")" \
+        "$current" "$total"
+    # Always rc 0 — an arithmetic false as last statement would abort callers
+    if (( current == total )); then printf '\n'; fi
+    return 0
+}
+
+
 
 log_info() {
     echo -e "${GREEN}[✓]${NC} $1"
@@ -159,7 +347,8 @@ confirm() {
         return 0
     fi
     echo -ne "${YELLOW}$prompt${NC}"
-    read -r response
+    # Guard EOF (piped/closed stdin): bare read failure would abort under set -e
+    read -r response || response=""
     case "$response" in
         [yY][eE][sS]|[yY])
             return 0
@@ -412,6 +601,60 @@ handle_sip() {
     try_mount_writable || true
 }
 
+# Phase plan (narrowed by ui_phase_select)
+choose_phase_plan() {
+    if ! ui_active; then
+        return 0   # non-interactive: keep default (all phases)
+    fi
+    local -a labels=(
+        "[1] Disable Apple Intelligence & Siri (settings only)"
+        "[2] Remove AI model files (~$(format_size "${AI_STORAGE:-0}"))"
+        "[3] Clean AI-related caches"
+        "[4] Stop background AI services"
+        "[5] Final housekeeping (Spotlight, DNS)"
+    )
+    echo ""
+    echo -e "${BOLD}Which steps do you want to run?${NC}"
+    local -a items=("${labels[@]}")
+    local reply i
+    for i in "${!items[@]}"; do
+        printf "  ${BOLD}%2d)${NC} %s\n" "$((i + 1))" "${items[$i]}"
+    done
+    ui_rule
+    printf '%s\n' "$(dim "Enter numbers to run (e.g. 1 2 3), 'a'=all, 'q'=quit [a]:")"
+    printf '%s' "> "
+    read -r reply || reply=""
+    reply="${reply:-a}"
+    case "$reply" in
+        a|A)
+            return 0
+            ;;
+        q|Q)
+            echo "Cancelled by user."
+            exit 0
+            ;;
+        *)
+            RUN_PHASE_1=false RUN_PHASE_2=false RUN_PHASE_3=false
+            RUN_PHASE_4=false RUN_PHASE_5=false
+            local tok
+            for tok in $reply; do
+                case "$tok" in
+                    1) RUN_PHASE_1=true ;;
+                    2) RUN_PHASE_2=true ;;
+                    3) RUN_PHASE_3=true ;;
+                    4) RUN_PHASE_4=true ;;
+                    5) RUN_PHASE_5=true ;;
+                esac
+            done
+            if ! $RUN_PHASE_1 && ! $RUN_PHASE_2 && ! $RUN_PHASE_3 && ! $RUN_PHASE_4 && ! $RUN_PHASE_5; then
+                printf '%s\n' "$(dim "(nothing selected - running all steps)")"
+                RUN_PHASE_1=true RUN_PHASE_2=true RUN_PHASE_3=true RUN_PHASE_4=true RUN_PHASE_5=true
+            fi
+            ;;
+    esac
+    echo ""
+}
+
 preflight_checks() {
     print_section "Pre-flight Checks"
 
@@ -434,6 +677,9 @@ preflight_checks() {
     # Check for Apple Intelligence storage (dynamic UAF_* scan on all AssetsV2 roots)
     local kb
     AI_STORAGE=0
+    if ui_active; then
+        spinner_start "Scanning AssetsV2 for AI model files..."
+    fi
     while IFS= read -r assets_root; do
         [[ -z "$assets_root" ]] && continue
         for dir in "$assets_root"/com_apple_MobileAsset_UAF_*; do
@@ -443,6 +689,7 @@ preflight_checks() {
             fi
         done
     done < <(assets_v2_roots)
+    spinner_stop
 
     if [[ "$AI_STORAGE" -gt 0 ]]; then
         log_info "Apple Intelligence models found: $(format_size $AI_STORAGE)"
@@ -640,30 +887,73 @@ remove_apple_intelligence_models() {
         return
     fi
 
-    echo "Apple Intelligence model directories:"
+    # ---- scan each path with a spinner, then show the selection checklist ----
+    local -a entries=()       # "size_kb<TAB>path"
+    local kb_total=0 kb_path
+    if ui_active; then
+        spinner_start "Scanning model directories..."
+    fi
     for path in "${AI_PATHS[@]}"; do
-        if [[ -e "$path" ]]; then
-            size=$(get_dir_size "$path")
-            total_size=$((total_size + size))
-            echo -e "  ${CYAN}Found:${NC} $path"
-            echo -e "        Size: $(format_size $size)"
-        fi
+        [[ -e "$path" ]] || continue
+        kb_path=$(get_dir_size "$path")
+        entries+=("${kb_path}$(printf '\t%s' "$path")")
+        kb_total=$((kb_total + kb_path))
     done
+    spinner_stop
 
-    if [[ $total_size -eq 0 ]]; then
+    if [[ $kb_total -eq 0 ]]; then
         log_warn "No Apple Intelligence model files found."
         return
     fi
 
     echo ""
-    echo -e "${BOLD}Total Apple Intelligence data: $(format_size $total_size)${NC}"
+    echo -e "${BOLD}Apple Intelligence data found: $(format_size $kb_total) in ${#entries[@]} locations${NC}"
+    ui_rule
 
-    if ! confirm "Remove these Apple Intelligence files?"; then
+    local -a labels=() idx entry label_path label_kb
+    for idx in "${!entries[@]}"; do
+        entry="${entries[$idx]}"
+        label_kb="${entry%%$'\t'*}"
+        label_path="${entry#*$'\t'}"
+        labels+=("$(printf '%-9s %s' "$(format_size "$label_kb")" "$label_path")")
+    done
+
+    echo "Select locations to REMOVE:"
+    local picks="" sel_rc=0
+    # Direct call, NOT $(...): inside command substitution stdout is a pipe
+    # and ui_active() would always be false, even on a real TTY.
+    ui_menu_multiselect "a" "${labels[@]}" || sel_rc=$?
+    picks="$UI_PICKS"
+    if [[ $sel_rc -eq 2 ]]; then
+        # No interactive UI (pipe / --no-ui): default to everything; the
+        # confirm below still gates the deletion.
+        picks="$(seq 1 ${#entries[@]} | tr '\n' ' ')"
+    elif [[ $sel_rc -ne 0 ]]; then
+        return   # nothing selected / empty reply
+    fi
+
+    # Resolve selected entries to paths (+ sizes for the confirm and partials)
+    local -a to_remove=()
+    local -a kb_to_remove=()
+    local idx e sel_kb=0
+    for idx in $picks; do
+        e="${entries[$((idx - 1))]}"
+        to_remove+=("${e#*$'\t'}")
+        kb_to_remove+=("${e%%$'\t'*}")
+        sel_kb=$((sel_kb + ${e%%$'\t'*}))
+    done
+    local total_to_remove=${#to_remove[@]}
+    if [[ $total_to_remove -eq 0 ]]; then
+        return
+    fi
+
+    # ---- confirm before deletion ----
+    if ! confirm "Delete $total_to_remove location(s), $(format_size $sel_kb) total?"; then
         return
     fi
 
     local has_system_paths=false
-    for path in "${AI_PATHS[@]}"; do
+    for path in "${to_remove[@]}"; do
         if [[ "$path" == /System/* ]] || [[ "$path" == /Library/* ]]; then
             has_system_paths=true
             break
@@ -688,11 +978,17 @@ remove_apple_intelligence_models() {
     fi
 
     local failed=0
-    for path in "${AI_PATHS[@]}"; do
+    local prog_current=0
+    for path in "${to_remove[@]}"; do
+        prog_current=$((prog_current + 1))
         [[ -e "$path" ]] || continue
 
         if $DRY_RUN; then
-            log_action "Remove $path"
+            if ui_active; then
+                ui_progress_render "$prog_current" "$total_to_remove" "Would remove"
+            else
+                log_action "Remove $path"
+            fi
             ITEMS_REMOVED=$((ITEMS_REMOVED + 1))
             continue
         fi
@@ -729,15 +1025,24 @@ remove_apple_intelligence_models() {
             # Partial delete: tree may be smaller even if not empty
             local after
             after=$(get_dir_size "$path")
-            if [[ "$after" -lt "$size" ]] 2>/dev/null; then
+            if [[ "$after" -lt "${kb_to_remove[$((prog_current - 1))]:-0}" ]] 2>/dev/null; then
                 log_warn "Partially removed $path ($(format_size $after) left)"
             fi
+            if ui_active; then
+                printf '\n'   # progress bar owns the line; start fresh
+            fi
             log_error "Failed to fully remove $path"
-            [[ -n "$err" ]] && echo "$err" | head -3 | sed 's/^/         /'
+            if [[ -n "$err" ]]; then
+                printf '%s\n' "$err" | head -n 3 | sed 's/^/         /'
+            fi
             explain_system_delete_failure "$path"
             failed=$((failed + 1))
         fi
     done
+    if ui_active; then
+        # A partial deletion leaves the last bar mid-line; close it at 100%
+        ui_progress_render "$total_to_remove" "$total_to_remove" "Processed"
+    fi
 
     if [[ $failed -gt 0 ]]; then
         log_warn "$failed path(s) incomplete — often .AssetData EROFS (issues #2/#3)."
@@ -786,18 +1091,50 @@ clean_system_caches() {
         echo ""
         echo -e "${BOLD}Total cache size: $(format_size $total_cache_size)${NC}"
 
-        if confirm "Clean these caches?"; then
+        # UI mode: pick which caches to clean; otherwise plain y/n for all
+        local sel_rc=0
+        local -a clean_list=()
+        if ui_active; then
+            local -a cache_labels=() cache_paths=() idx kb cache_path
             for cache_path in "${CACHE_PATHS[@]}"; do
-                if [[ -d "$cache_path" ]]; then
-                    if $DRY_RUN; then
-                        log_action "Clean cache: $cache_path"
-                    else
-                        rm -rf "$cache_path"/* 2>/dev/null && \
-                            log_info "Cleaned: $cache_path" || \
-                            log_error "Failed to clean: $cache_path"
-                    fi
-                fi
+                [[ -d "$cache_path" ]] || continue
+                kb=$(get_dir_size "$cache_path")
+                [[ $kb -gt 0 ]] || continue
+                cache_paths+=("$cache_path")
+                cache_labels+=("$(printf '%-9s %s' "$(format_size "$kb")" "$cache_path")")
             done
+            if [[ ${#cache_labels[@]} -gt 0 ]]; then
+                echo "Select caches to CLEAN:"
+                ui_menu_multiselect "a" "${cache_labels[@]}" || sel_rc=$?
+                local idx
+                for idx in ${UI_PICKS:-}; do
+                    clean_list+=("${cache_paths[$((idx - 1))]}")
+                done
+            fi
+        fi
+
+        if [[ $sel_rc -eq 2 ]]; then
+            if confirm "Clean these caches?"; then
+                for cache_path in "${CACHE_PATHS[@]}"; do
+                    [[ -d "$cache_path" ]] && clean_list+=("$cache_path")
+                done
+            fi
+        fi
+
+        # bash 3.2 + set -u: expanding an EMPTY array is an unbound-variable
+        # error, so guard the loop instead of trusting ${arr[@]}.
+        if [[ ${#clean_list[@]} -gt 0 ]]; then
+          for cache_path in "${clean_list[@]}"; do
+            if [[ -d "$cache_path" ]]; then
+                if $DRY_RUN; then
+                    log_action "Clean cache: $cache_path"
+                else
+                    rm -rf "$cache_path"/* 2>/dev/null && \
+                        log_info "Cleaned: $cache_path" || \
+                        log_error "Failed to clean: $cache_path"
+                fi
+            fi
+          done
         fi
     else
         log_info "No AI-related caches found."
@@ -910,6 +1247,21 @@ print_summary() {
     if $DRY_RUN; then
         echo -e "${YELLOW}This was a DRY RUN - no changes were made.${NC}"
         echo "Run without --dry-run to apply changes."
+    elif ui_active; then
+        # Results table (interactive mode)
+        echo -e "${BOLD}Results${NC}"
+        ui_rule
+        if [[ $ITEMS_REMOVED -gt 0 ]]; then
+            printf '  %s\n' "${GREEN}✔${NC} Removed / processed: ${BOLD}$ITEMS_REMOVED${NC} location(s)"
+        else
+            printf '  %s\n' "$(dim "○ Nothing was removed")"
+        fi
+        if [[ $ERRORS -gt 0 ]]; then
+            printf '  %s\n' "${RED}✘ Failures:${NC} ${BOLD}$ERRORS${NC} (details above)"
+        else
+            printf '  %s\n' "${GREEN}✔${NC} Failures: 0"
+        fi
+        ui_rule
     else
         echo -e "  Items processed: ${GREEN}${ITEMS_REMOVED}${NC}"
         if [[ $ERRORS -gt 0 ]]; then
@@ -994,18 +1346,20 @@ main() {
         fi
     fi
 
-    # Run all phases
+    # Run all phases (set narrowed by choose_phase_plan in UI mode)
     preflight_checks
-    disable_apple_intelligence
-    remove_apple_intelligence_models
-    clean_system_caches
-    disable_background_services
-    final_cleanup
+    choose_phase_plan
+
+    if $RUN_PHASE_1; then disable_apple_intelligence; fi
+    if $RUN_PHASE_2; then remove_apple_intelligence_models; fi
+    if $RUN_PHASE_3; then clean_system_caches; fi
+    if $RUN_PHASE_4; then disable_background_services; fi
+    if $RUN_PHASE_5; then final_cleanup; fi
     print_summary
 }
 
-# Trap for cleanup on exit
-trap 'echo -e "\n${YELLOW}Script interrupted.${NC}"; exit 1' INT TERM
+# Trap for cleanup on exit; restore cursor and stop any spinner
+trap 'spinner_stop; printf "\033[?25h"; echo -e "\n${YELLOW}Script interrupted.${NC}"; exit 1' INT TERM
 
 # Execute only when run directly; sourcing this file (tests/run_tests.sh)
 # defines the functions and returns without executing anything.

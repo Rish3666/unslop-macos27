@@ -123,6 +123,31 @@ else
 fi
 unset -f assets_v2_roots
 
+# --- ui_menu_multiselect non-TTY behavior: rc 2 (fall back to confirm),
+# or full selection under --force with UI_PICKS populated.
+UI_PICKS=""
+( ui_menu_multiselect "a" "x" "y" ) >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 2 ]]; then
+    t_pass "ui_menu_multiselect signals rc 2 when UI inactive"
+else
+    t_fail "ui_menu_multiselect rc=$rc when UI inactive (expected 2)"
+fi
+FORCE=true UI_PICKS=""
+ui_menu_multiselect "a" "x" "y" >/dev/null 2>&1
+rc=$?
+FORCE=false
+if [[ $rc -eq 0 ]] && [[ "$UI_PICKS" == "1 2 "* ]]; then
+    t_pass "ui_menu_multiselect --force selects all into UI_PICKS"
+else
+    t_fail "ui_menu_multiselect --force rc=$rc UI_PICKS='$UI_PICKS'"
+fi
+
+# --- ui_active: inactive for --no-ui even on a TTY-ish run
+NO_UI=true
+if ui_active; then t_fail "ui_active true with --no-ui"; else t_pass "ui_active false with --no-ui"; fi
+NO_UI=false
+
 # ---------------------------------------------------------------------------
 echo "== integration: cleanup.sh --dry-run (sudo stubbed, read-only) =="
 STUB="$(mktemp -d)"
@@ -145,6 +170,20 @@ if printf '%s' "$NO_COLOR_OUT" | grep -q $'\033'; then
 else
     t_pass "NO_COLOR=1 disables colors"
 fi
+# --no-ui must behave like the plain flow: exit 0, no menus, no ANSI
+NOUI_OUT="$(PATH="$STUB:$PATH" "$CLEANUP" --dry-run --no-ui < /dev/null 2>&1)"
+NOUI_RC=$?
+if [[ $NOUI_RC -eq 0 ]]; then t_pass "--no-ui --dry-run exits 0"; else t_fail "--no-ui --dry-run exit $NOUI_RC"; fi
+case "$NOUI_OUT" in *"Enter numbers"*) t_fail "--no-ui still showed a menu";; *) t_pass "--no-ui shows no menus";; esac
+if printf '%s' "$NOUI_OUT" | grep -q $'\033'; then
+    t_fail "--no-ui output contains ANSI escapes"
+else
+    t_pass "--no-ui output is plain"
+fi
+# Unknown flag must still be rejected
+( PATH="$STUB:$PATH" "$CLEANUP" --bogus < /dev/null ) >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 64 ]]; then t_pass "unknown flag exits 64"; else t_fail "unknown flag exit $rc (expected 64)"; fi
 rm -rf "$STUB"
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,19 @@ chmod +x cleanup.sh
 ./cleanup.sh --force
 ```
 
+### Interactive UI
+
+When run in a terminal, the script walks you through the cleanup:
+
+1. **Step picker** — choose which phases to run (numbers, `a` = all, `q` = quit)
+2. **Selection checklists** — pick exactly which model directories and caches
+   to remove, with sizes shown next to each entry
+3. **Spinners** while scanning, a **progress bar** while deleting, and a
+   **results table** at the end
+
+Piped output, `--no-ui`, or a non-terminal automatically falls back to plain
+`y/N` prompts, so the script stays safe in scripts and CI.
+
 ### Command Line Options
 
 | Flag | Description |
@@ -58,6 +71,7 @@ chmod +x cleanup.sh
 | `--dry-run`, `-n` | Preview changes without modifying anything |
 | `--force`, `-f` | Skip all confirmation prompts |
 | `--verbose`, `-v` | Show detailed output |
+| `--no-ui` | Disable the interactive UI (plain y/n prompts only) |
 | `--help`, `-h` | Show help message |
 
 ## What Gets Cleaned
