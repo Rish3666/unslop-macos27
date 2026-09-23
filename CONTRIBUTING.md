@@ -14,7 +14,6 @@ Thanks for your interest in contributing! This project is open source and welcom
    - Expected vs actual behavior
 
 ### Suggesting Features
-
 Open an issue with the `enhancement` label and describe:
 - What the feature does
 - Why it's useful
@@ -35,7 +34,7 @@ Open an issue with the `enhancement` label and describe:
 5. **Test thoroughly** (see Testing section)
 6. **Commit** with a clear message:
    ```bash
-   git commit -m "Add: description of what you added"
+   git commit -m "Fix: description of what you fixed"
    ```
 7. **Push** and open a Pull Request
 
@@ -50,8 +49,8 @@ Use these prefixes:
 
 Examples:
 ```
-Add: support for Jan AI models
-Fix: Ollama model detection on Apple Silicon
+Add: logging to file (--log flag)
+Fix: root-writability detection on sealed APFS snapshots
 Update: improve error handling for SIP-protected files
 Docs: add troubleshooting section
 ```
@@ -65,14 +64,21 @@ Docs: add troubleshooting section
 
 ### Testing
 
-**Always test with --dry-run first:**
+Run the test suite — it only uses `--dry-run` and a stubbed `sudo`, so it never
+modifies anything:
 ```bash
-./cleanup.sh --dry-run
+./tests/run_tests.sh
+```
+
+`--verbose` (dry run) shows every discovered path:
+```bash
+./cleanup.sh --dry-run --verbose
 ```
 
 **Test on a clean system or VM if possible.**
 
 **Manual testing checklist:**
+- [ ] `./tests/run_tests.sh` passes
 - [ ] Script runs without errors
 - [ ] --dry-run shows correct output
 - [ ] Confirmation prompts work
@@ -87,28 +93,29 @@ Docs: add troubleshooting section
 - Use meaningful variable names
 - Comment complex logic
 - Follow existing code patterns
+- Guard arithmetic under `set -e` (`VAR=$((VAR + 1))`, not `((VAR++))`)
+- Use `if`/`|| true` around `&&`-chained commands that can be a loop's last statement
 
 ## Ideas for Contributions
 
 ### High Priority
-- [ ] Add support for Jan AI
-- [ ] Add support for GPT4All
-- [ ] Add support for text-generation-webui
 - [ ] Add logging to file (`--log` flag)
 - [ ] Add backup/restore functionality
+- [ ] Add CI (GitHub Actions) running `./tests/run_tests.sh` on macOS runners
 
 ### Medium Priority
 - [ ] Create a GUI version (SwiftUI preferred)
 - [ ] Add Homebrew formula
-- [ ] Add uninstall/reinstall for specific tools
 - [ ] Improve SIP detection and handling
-- [ ] Add CI/CD testing with GitHub Actions
+- [ ] Investigate `.AssetData` EROFS (issues #2/#7/#8)
 
 ### Low Priority
 - [ ] Add completion script for bash/zsh
 - [ ] Add man page
-- [ ] Translate to other languages
 - [ ] Add colorblind-friendly output mode
+
+> Note: third-party local-model cleanup (Ollama, LM Studio, Jan, GPT4All, etc.)
+> is out of scope for this repo — see AGENTS.md.
 
 ## Code of Conduct
 

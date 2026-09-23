@@ -8,15 +8,16 @@ Guidance for AI agents (and humans) working on this repository.
 
 ---
 
-## Project status (as of 2026-09-23)
+## Project status (as of 2026-09-24)
 
 | Item | Status |
 |------|--------|
-| Script + README + LICENSE + CONTRIBUTING | Pushed (`main`, latest `08266a1`) |
-| Phases 1–4 in `cleanup.sh` | Implemented (see below) |
+| Script + README + LICENSE + CONTRIBUTING | Pushed (`main`) |
+| Phases 1–5 in `cleanup.sh` | Implemented (see below) |
+| Test suite `tests/run_tests.sh` | Added (unit + dry-run smoke, stubbed sudo) |
 | Manual deletion on test M4 Mac | Partial: ~15 GB → ~4.1 GB UAF remaining |
 | `mount -uw /` | **Broken** on this machine (see issue #1) |
-| Open issues | [#1](https://github.com/Rish3666/unslop-macos27/issues/1)–[#6](https://github.com/Rish3666/unslop-macos27/issues/6) |
+| Open issues | [#1](https://github.com/Rish3666/unslop-macos27/issues/1), [#2](https://github.com/Rish3666/unslop-macos27/issues/2), [#3](https://github.com/Rish3666/unslop-macos27/issues/3), [#7](https://github.com/Rish3666/unslop-macos27/issues/7), [#8](https://github.com/Rish3666/unslop-macos27/issues/8), [#9](https://github.com/Rish3666/unslop-macos27/issues/9) |
 
 ### Test machine facts (do not assume on other machines)
 
@@ -113,12 +114,27 @@ Also seen earlier (may already be gone): `UAF_FM_GenerativeModels`, `UAF_FM_Visu
 
 ## Script fixes already landed
 
-- Dynamic `com_apple_MobileAsset_UAF_*` scan via `collect_ai_model_paths()` / `assets_v2_roots()` (Data path first).
-- `chflags -R norestricted,noschg,nouchg` before system `rm`.
-- Absolute `/sbin/mount -uw /` for remount.
-- Kill MobileAsset-related daemons before delete.
-- Phase labels 1–5; header URL; `.write_test*` cleanup.
-- Failure blurb points at EROFS / Recovery (issues #2/#3/#7).
+- Dynamic `com_apple_MobileAsset_UAF_*` scan via `collect_ai_model_paths()` / `assets_v2_roots()` (Data path first, deduped).
+- Recursive flag clear via `find -x ... -exec chflags` — macOS `chflags` has no `-R` (older `chflags -R` silently no-op'd).
+- Absolute `/sbin/mount -uw /` for remount; bogus disk-specific update variant removed; success judged by mount flags.
+- `is_root_writable()` greps the `/` mount line for `read-only` (old `awk '{print $4}' == *rw*` grabbed `"(apfs,"` — the parenthesized option list — so it never worked in either direction).
+- `get_dir_size()` takes first `du` line and falls back to 0 (defensive numeric parse).
+- Root/path dedup by device:inode (`stat -Lf '%d:%i'`) in `assets_v2_roots()` / `collect_ai_model_paths()` — firmlinked `/System/Library/AssetsV2` and the Data-volume path were both scanned, double-counting every model (dry-run reported 63.76 GB; actual ≈ 32 GB).
+- `set -e` guards: `ERRORS=$((ERRORS+1))`, `local` moved into functions, guarded volume-scan loop in `recovery-delete.sh`.
+- Kill broader MobileAsset daemon set before delete.
+- Phase labels 1–5; header URL; `.write_test*` cleanup; unknown CLI flags rejected; source guard for tests.
+- Failure blurb points at EROFS / Recovery (issues #2/#3/#7) and `recovery-delete.sh`.
+
+## Testing
+
+```bash
+./tests/run_tests.sh
+```
+
+Covers: `bash -n` on both scripts, `get_dir_size` (double-count regression),
+`is_root_writable` (rw/read-only regression), `parse_args` flag handling,
+firmlink dedup in `collect_ai_model_paths`, and an integration run of
+`cleanup.sh --dry-run` with a stubbed `sudo` (exits 0, no system mutation).
 
 ## Recommended next steps for an agent
 

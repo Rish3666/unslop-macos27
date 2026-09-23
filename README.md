@@ -182,6 +182,14 @@ Then turn FileVault back on in System Settings > Privacy & Security.
 | Idle CPU | Siri/AI daemons running | Reduced background activity |
 | RAM | AI services loaded | Lower memory usage |
 
+> **Known limitation:** some `.AssetData` subtrees inside the assets return
+> `EROFS (Read-only file system)` even with SIP + Authenticated Root disabled
+> (issues [#2](https://github.com/Rish3666/unslop-macos27/issues/2),
+> [#7](https://github.com/Rish3666/unslop-macos27/issues/7)). On affected
+> setups a portion of the models can only be removed from Recovery Terminal —
+> use `./recovery-delete.sh` to print the exact commands. Do not expect the
+> full 5-15 GB until that issue is solved.
+
 ## Troubleshooting
 
 **"Permission denied" errors**
@@ -200,6 +208,15 @@ sudo ./cleanup.sh
 1. System Settings > Apple Intelligence & Siri
 2. Toggle Apple Intelligence back on
 3. macOS re-downloads the models automatically
+
+## Development & Testing
+
+A self-contained test suite lives in `tests/`. It only exercises `--dry-run`
+and stubs `sudo`, so it never modifies your system:
+
+```bash
+./tests/run_tests.sh
+```
 
 ## Contributing
 

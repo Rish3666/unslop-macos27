@@ -19,6 +19,8 @@
 
 set -euo pipefail
 
+CLEANUP_SCRIPT_VERSION="2.1.0"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -27,6 +29,12 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
+
+# Disable colors when stdout is not a terminal (pipes, files, CI) or when
+# NO_COLOR is set. Without this, ANSI escapes corrupt piped/grepped output.
+if [[ ! -t 1 ]] || [[ -n "${NO_COLOR:-}" ]]; then
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' NC=''
+fi
 
 # Flags
 DRY_RUN=false
@@ -38,30 +46,41 @@ SPACE_FREED=0
 ITEMS_REMOVED=0
 ERRORS=0
 
-# Parse arguments
-for arg in "$@"; do
-    case $arg in
-        --dry-run|-n)
-            DRY_RUN=true
-            ;;
-        --force|-f)
-            FORCE=true
-            ;;
-        --verbose|-v)
-            VERBOSE=true
-            ;;
-        --help|-h)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --dry-run, -n    Preview changes without making them"
-            echo "  --force, -f      Skip confirmation prompts"
-            echo "  --verbose, -v    Show detailed output"
-            echo "  --help, -h       Show this help message"
-            exit 0
-            ;;
-    esac
-done
+# Parse arguments; unknown flags are rejected instead of silently ignored.
+# Lives in a function so tests can source this file without executing it.
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run|-n)
+                DRY_RUN=true
+                ;;
+            --force|-f)
+                FORCE=true
+                ;;
+            --verbose|-v)
+                VERBOSE=true
+                ;;
+            --help|-h)
+                echo "Usage: $0 [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --dry-run, -n    Preview changes without making them"
+                echo "  --force, -f      Skip confirmation prompts"
+                echo "  --verbose, -v    Show detailed output"
+                echo "  --help, -h       Show this help message"
+                echo ""
+                echo "cleanup.sh v$CLEANUP_SCRIPT_VERSION"
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                echo "Run with --help to see usage." >&2
+                exit 64
+                ;;
+        esac
+        shift
+    done
+}
 
 # =============================================================================
 # Helper Functions
@@ -93,7 +112,8 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[✗]${NC} $1"
-    ((ERRORS++))
+    # Plain ((ERRORS++)) evaluates to 0 (rc=1) and aborts the script under set -e
+    ERRORS=$((ERRORS + 1))
 }
 
 log_action() {
@@ -105,9 +125,12 @@ log_action() {
 }
 
 get_dir_size() {
-    local dir="$1"
+    local dir="$1" kb
     if [[ -d "$dir" ]]; then
-        du -sk "$dir" 2>/dev/null | cut -f1 || echo "0"
+        # head -n 1 is defensive: single-arg du emits one line, but variants
+        # that append a grand-total line would break the numeric parse.
+        kb=$(du -sk "$dir" 2>/dev/null | head -n 1 | cut -f1 || true)
+        [[ -n "$kb" ]] && echo "$kb" || echo "0"
     else
         echo "0"
     fi
@@ -162,14 +185,19 @@ get_auth_root_status() {
     csrutil authenticated-root status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown"
 }
 
+# Detect whether / is mounted read-write. Optional arg = mount output
+# (for tests); defaults to the live `mount` table.
+# Note: the old `awk '{print $4}' == *rw*` check never worked on macOS —
+# $4 of a mount line is "(apfs," because the option list is parenthesized.
 is_root_writable() {
-    local opts
-    opts=$(mount | awk '$3=="/" {print $4}')
-    if [[ "$opts" == *"rw"* ]]; then
-        return 0
-    else
+    local mounts="${1:-}"
+    if [[ -z "$mounts" ]]; then
+        mounts=$(mount)
+    fi
+    if printf '%s\n' "$mounts" | awk '$3=="/"' | grep -q "read-only"; then
         return 1
     fi
+    return 0
 }
 
 try_mount_writable() {
@@ -178,15 +206,15 @@ try_mount_writable() {
         return 0
     fi
     log_info "Remounting system volume as writable..."
-    # Prefer absolute paths; bare "mount" via sudo can fail to resolve (exit 127)
-    if sudo /sbin/mount -uw / 2>/dev/null \
-        || sudo /sbin/mount -t apfs -o update,rw /dev/disk3s1s1 / 2>/dev/null \
-        || sudo mount -uw / 2>/dev/null; then
-        if is_root_writable; then
-            ROOT_WRITABLE=true
-            log_info "System volume is now writable."
-            return 0
-        fi
+    # Absolute path (bare "mount" via sudo can fail to resolve, exit 127).
+    # The disk-specific update variant targets the sealed snapshot and always
+    # fails with exit 66 (issues #1, #9), so it is gone; judge success by the
+    # resulting mount flags instead of rm's exit code.
+    sudo /sbin/mount -uw / 2>/dev/null || true
+    if is_root_writable; then
+        ROOT_WRITABLE=true
+        log_info "System volume is now writable."
+        return 0
     fi
     ROOT_WRITABLE=false
     log_warn "Could not remount system volume as writable."
@@ -404,12 +432,12 @@ preflight_checks() {
     echo ""
 
     # Check for Apple Intelligence storage (dynamic UAF_* scan on all AssetsV2 roots)
+    local kb
     AI_STORAGE=0
     while IFS= read -r assets_root; do
         [[ -z "$assets_root" ]] && continue
         for dir in "$assets_root"/com_apple_MobileAsset_UAF_*; do
             if [[ -d "$dir" ]]; then
-                local kb
                 kb=$(get_dir_size "$dir")
                 AI_STORAGE=$((AI_STORAGE + kb))
             fi
@@ -478,20 +506,41 @@ disable_apple_intelligence() {
 # Phase 2: Remove Apple Intelligence Model Files
 # =============================================================================
 
+# Emit $@ keeping only dirs that exist and resolve to distinct directories
+# (device:inode via Darwin stat). Different path strings can be the SAME
+# directory on macOS 27: /System/Library/AssetsV2 is firmlinked to the
+# Data-volume AssetsV2, and scanning both double-counted every model.
+# Darwin stat: -f format, -L follow symlinks.
+dedupe_dirs_by_identity() {
+    local r other key_r key_o dup
+    local -a out=()
+    for r in "$@"; do
+        [[ -d "$r" ]] || continue
+        key_r=$(stat -Lf '%d:%i' "$r" 2>/dev/null || echo "$r")
+        dup=false
+        if [[ ${#out[@]} -gt 0 ]]; then
+            for other in "${out[@]}"; do
+                key_o=$(stat -Lf '%d:%i' "$other" 2>/dev/null || echo "$other")
+                if [[ "$key_r" == "$key_o" ]]; then
+                    dup=true
+                    break
+                fi
+            done
+        fi
+        if ! $dup; then
+            out+=("$r")
+        fi
+    done
+    printf '%s\n' "${out[@]}"
+}
+
 # AssetsV2 is firmlinked to the Data volume on macOS 27. Prefer the Data
 # path when the sealed root snapshot is read-only (see AGENTS.md / issues #1, #5).
 assets_v2_roots() {
-    local roots=()
-    local r
-    for r in \
+    dedupe_dirs_by_identity \
         "/System/Volumes/Data/System/Library/AssetsV2" \
         "/System/Library/AssetsV2" \
-        "/Library/Apple/System/Library/AssetsV2"; do
-        if [[ -d "$r" ]]; then
-            roots+=("$r")
-        fi
-    done
-    printf '%s\n' "${roots[@]}"
+        "/Library/Apple/System/Library/AssetsV2"
 }
 
 # Collect Apple Intelligence / Siri UAF model dirs (dynamic glob, not hardcoded).
@@ -513,9 +562,10 @@ collect_ai_model_paths() {
         done
     done < <(assets_v2_roots)
 
-    # Dedupe (same path via firmlink roots)
+    # Identity dedupe (device:inode): a dir can be reached via multiple root
+    # path strings (firmlink) or matched by both the glob and legacy names.
     if [[ ${#found[@]} -gt 0 ]]; then
-        printf '%s\n' "${found[@]}" | awk '!seen[$0]++'
+        dedupe_dirs_by_identity "${found[@]}"
     fi
 }
 
@@ -525,7 +575,9 @@ clear_asset_flags() {
     if [[ ! -e "$path" ]]; then
         return 0
     fi
-    sudo chflags -R norestricted,noschg,nouchg,uchg,hidden "$path" 2>/dev/null || true
+    # macOS chflags has NO -R flag, so `chflags -R ...` failed on every call;
+    # walk the tree with find instead (-x stays on one filesystem).
+    sudo find -x "$path" -exec chflags norestricted,noschg,nouchg {} + 2>/dev/null || true
 }
 
 explain_system_delete_failure() {
@@ -539,9 +591,10 @@ explain_system_delete_failure() {
         echo "         Sealed root snapshot is read-only (mount -uw / may fail; see issue #1)."
         echo "         Data-volume path may still work: /System/Volumes/Data/System/Library/AssetsV2"
     else
-        echo "         Possible causes: EROFS inside .AssetData (issue #2),"
+        echo "         Possible causes: EROFS inside .AssetData (issues #2/#7),"
         echo "         open handles / Resource busy (issue #3), or missing chflags clear."
-        echo "         Try: sudo chflags -R norestricted,noschg,nouchg \"$path\" && sudo rm -rf \"$path\""
+        echo "         Try: sudo find -x \"$path\" -exec chflags norestricted,noschg,nouchg {} + && sudo rm -rf \"$path\""
+        echo "         Recovery helper: ./recovery-delete.sh prints the exact rm commands."
     fi
 }
 
@@ -621,7 +674,12 @@ remove_apple_intelligence_models() {
         try_mount_writable || true
         # Stop daemons that pin MobileAsset files before rm (issue #3)
         if command -v pkill >/dev/null 2>&1; then
-            local procs=(assistantd mobileassetd mds mds_stores suggestd)
+            # Daemons observed pinning MobileAsset assets (AGENTS.md finding 3)
+            local procs
+            procs=(assistantd mobileassetd mds mds_stores suggestd \
+                   parsecd corespotlightd privacyd tccd nsurlsessiond \
+                   "Siri Agent" SiriInference SiriTextToSpeech SiriVoiceTrigger)
+            local p
             for p in "${procs[@]}"; do
                 sudo pkill -9 "$p" 2>/dev/null || true
             done
@@ -635,7 +693,7 @@ remove_apple_intelligence_models() {
 
         if $DRY_RUN; then
             log_action "Remove $path"
-            ((ITEMS_REMOVED++))
+            ITEMS_REMOVED=$((ITEMS_REMOVED + 1))
             continue
         fi
 
@@ -647,15 +705,26 @@ remove_apple_intelligence_models() {
         clear_asset_flags "$path"
 
         local err=""
-        if $needs_sudo; then
-            err=$(sudo rm -rf "$path" 2>&1) || true
+        # `head` closing the pipe can SIGPIPE rm; with pipefail that flips $?,
+        # so the exit status is ignored here and success is judged below by
+        # whether the path still exists. --force implies verbose output.
+        if [[ "$VERBOSE" == true || "$FORCE" == true ]]; then
+            if [[ "$needs_sudo" == true ]]; then
+                err=$(sudo rm -rf "$path" 2>&1) || true
+            else
+                err=$(rm -rf "$path" 2>&1) || true
+            fi
         else
-            err=$(rm -rf "$path" 2>&1) || true
+            if [[ "$needs_sudo" == true ]]; then
+                err=$(sudo rm -rf "$path" 2>&1 | head -n 3) || true
+            else
+                err=$(rm -rf "$path" 2>&1 | head -n 3) || true
+            fi
         fi
 
         if [[ ! -e "$path" ]]; then
             log_info "Removed $path"
-            ((ITEMS_REMOVED++))
+            ITEMS_REMOVED=$((ITEMS_REMOVED + 1))
         else
             # Partial delete: tree may be smaller even if not empty
             local after
@@ -694,7 +763,7 @@ clean_system_caches() {
         "$HOME/Library/Caches/com.apple.TCC"
         "$HOME/Library/Caches/Metadata/Siri"
         "$HOME/Library/Caches/com.apple.parsecd"
-        "$HOME/Library/Caches/com.apple.Siri.analytics"
+        "$HOME/Library/Caches/com.apple.siri.analytics"
         "$HOME/Library/Caches/CloudKit"
         "$HOME/Library/Caches/com.apple.icloud.searchpartyd"
     )
@@ -899,6 +968,7 @@ print_summary() {
 # =============================================================================
 
 main() {
+    parse_args "$@"
     print_header
 
     if $DRY_RUN; then
@@ -937,4 +1007,8 @@ main() {
 # Trap for cleanup on exit
 trap 'echo -e "\n${YELLOW}Script interrupted.${NC}"; exit 1' INT TERM
 
-main
+# Execute only when run directly; sourcing this file (tests/run_tests.sh)
+# defines the functions and returns without executing anything.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
