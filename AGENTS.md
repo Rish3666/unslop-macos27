@@ -68,18 +68,25 @@ Helpers: `get_sip_status`, `get_auth_root_status`, `is_root_writable`, `try_moun
 - Some dirs had the **`restricted`** flag — clear with `sudo chflags -R norestricted ...` before `rm`.
 - Processes that may hold assets (kill before retry): `assistantd`, `Siri Agent`, `mobileassetd`, `mds`, `mds_stores`, `suggestd`, `corespotlightd`, `parsecd`, `nsurlsessiond`, `privacyd`, `tccd`, etc.
 
-### 4. Remaining UAF inventory (after partial cleanup)
+### 4. Remaining UAF inventory (as of 2026-09-24)
+
+After the 2026-09-24 script run (`--force`): 19 of 25 UAF dirs removed
+(~10 GB freed), `UAF_FM_GenerativeModels` (12.8 GB) deleted successfully.
+Remaining ~4.4 GB, ALL failing only inside `*.asset.purged/.AssetData/`:
 
 | Directory | Approx size |
 |-----------|-------------|
-| `com_apple_MobileAsset_UAF_FM_CodeLM` | 2.2G |
-| `com_apple_MobileAsset_UAF_Siri_Understanding` | 1.1G |
-| `com_apple_MobileAsset_UAF_Photos_SpatialPhotosRelive` | 392M |
-| `com_apple_MobileAsset_UAF_Siri_TextToSpeech` | 305M |
-| `com_apple_MobileAsset_UAF_IF_Planner` | 258M |
-| `com_apple_MobileAsset_UAF_Speech_AutomaticSpeechRecognition` | 183M |
+| `com_apple_MobileAsset_UAF_FM_CodeLM` | 4.5G |
+| `com_apple_MobileAsset_UAF_Siri_Understanding` | 2.4G |
+| `com_apple_MobileAsset_UAF_Photos_SpatialPhotosRelive` | 818M |
+| `com_apple_MobileAsset_UAF_IF_Planner` | 378M |
+| `com_apple_MobileAsset_UAF_Speech_AutomaticSpeechRecognition` | 408M |
 
-Also seen earlier (may already be gone): `UAF_FM_GenerativeModels`, `UAF_FM_Visual`, `UAF_SummarizationKitConfiguration`, `UAF_Siri_UnderstandingASRHammer`.
+**Key new finding:** EROFS is confined to `.asset.purged` bundles — the
+non-purged `.asset` dirs (e.g. `UAF_FM_GenerativeModels`) delete fine with
+sudo while SIP/auth-root are disabled and the Data volume is rw. The
+protection is per-subtree, not universal; Recovery deletion remains the
+workaround for the `.purged` ones.
 
 ### 5. Leftover diagnostics
 

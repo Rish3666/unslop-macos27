@@ -153,7 +153,13 @@ echo "== integration: cleanup.sh --dry-run (sudo stubbed, read-only) =="
 STUB="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "$STUB/sudo"
 chmod +x "$STUB/sudo"
-DRY_OUT="$(PATH="$STUB:$PATH" "$CLEANUP" --dry-run < /dev/null 2>&1)"
+
+# Hermetic AssetsV2 root: keeps du scans off the real (multi-GB) system tree.
+HERMETIC_ROOT="$(mktemp -d)"
+mkdir -p "$HERMETIC_ROOT/com_apple_MobileAsset_UAF_TestA" "$HERMETIC_ROOT/com_apple_MobileAsset_UAF_TestB"
+printf 'x%.0s' {1..1024} > "$HERMETIC_ROOT/com_apple_MobileAsset_UAF_TestA/blob"
+export UNSLOP_ASSETS_ROOT="$HERMETIC_ROOT"
+DRY_OUT="$(PATH="$STUB:$PATH" UNSLOP_ASSETS_ROOT="$HERMETIC_ROOT" "$CLEANUP" --dry-run < /dev/null 2>&1)"
 DRY_RC=$?
 if [[ $DRY_RC -eq 0 ]]; then t_pass "--dry-run exits 0 under set -e"; else t_fail "--dry-run exit code $DRY_RC"; fi
 case "$DRY_OUT" in *"DRY RUN MODE"*) t_pass "dry-run banner shown";; *) t_fail "dry-run banner missing";; esac
@@ -164,14 +170,14 @@ if printf '%s' "$DRY_OUT" | grep -q $'\033'; then
 else
     t_pass "no ANSI escapes in piped (non-TTY) output"
 fi
-NO_COLOR_OUT="$(NO_COLOR=1 "$CLEANUP" --dry-run < /dev/null 2>&1)"
+NO_COLOR_OUT="$(PATH="$STUB:$PATH" UNSLOP_ASSETS_ROOT="$HERMETIC_ROOT" NO_COLOR=1 "$CLEANUP" --dry-run < /dev/null 2>&1)"
 if printf '%s' "$NO_COLOR_OUT" | grep -q $'\033'; then
     t_fail "NO_COLOR=1 ignored"
 else
     t_pass "NO_COLOR=1 disables colors"
 fi
 # --no-ui must behave like the plain flow: exit 0, no menus, no ANSI
-NOUI_OUT="$(PATH="$STUB:$PATH" "$CLEANUP" --dry-run --no-ui < /dev/null 2>&1)"
+NOUI_OUT="$(PATH="$STUB:$PATH" UNSLOP_ASSETS_ROOT="$HERMETIC_ROOT" "$CLEANUP" --dry-run --no-ui < /dev/null 2>&1)"
 NOUI_RC=$?
 if [[ $NOUI_RC -eq 0 ]]; then t_pass "--no-ui --dry-run exits 0"; else t_fail "--no-ui --dry-run exit $NOUI_RC"; fi
 case "$NOUI_OUT" in *"Enter numbers"*) t_fail "--no-ui still showed a menu";; *) t_pass "--no-ui shows no menus";; esac
@@ -184,7 +190,8 @@ fi
 ( PATH="$STUB:$PATH" "$CLEANUP" --bogus < /dev/null ) >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 64 ]]; then t_pass "unknown flag exits 64"; else t_fail "unknown flag exit $rc (expected 64)"; fi
-rm -rf "$STUB"
+rm -rf "$STUB" "$HERMETIC_ROOT"
+unset UNSLOP_ASSETS_ROOT
 
 # ---------------------------------------------------------------------------
 echo ""

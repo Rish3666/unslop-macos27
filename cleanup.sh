@@ -784,6 +784,12 @@ dedupe_dirs_by_identity() {
 # AssetsV2 is firmlinked to the Data volume on macOS 27. Prefer the Data
 # path when the sealed root snapshot is read-only (see AGENTS.md / issues #1, #5).
 assets_v2_roots() {
+    # Test hook: lets the suite run hermetically against a temp tree instead
+    # of scanning the real (multi-GB) AssetsV2 in every integration test.
+    if [[ -n "${UNSLOP_ASSETS_ROOT:-}" ]]; then
+        printf '%s\n' "$UNSLOP_ASSETS_ROOT"
+        return 0
+    fi
     dedupe_dirs_by_identity \
         "/System/Volumes/Data/System/Library/AssetsV2" \
         "/System/Library/AssetsV2" \
@@ -838,9 +844,9 @@ explain_system_delete_failure() {
         echo "         Sealed root snapshot is read-only (mount -uw / may fail; see issue #1)."
         echo "         Data-volume path may still work: /System/Volumes/Data/System/Library/AssetsV2"
     else
-        echo "         Possible causes: EROFS inside .AssetData (issues #2/#7),"
-        echo "         open handles / Resource busy (issue #3), or missing chflags clear."
-        echo "         Try: sudo find -x \"$path\" -exec chflags norestricted,noschg,nouchg {} + && sudo rm -rf \"$path\""
+        echo "         Likely cause: EROFS inside .AssetData of .asset.purged bundles"
+        echo "         (issues #2/#7). Note: non-purged assets (e.g. UAF_FM_GenerativeModels)"
+        echo "         delete fine — the protection is per-subtree, not universal."
         echo "         Recovery helper: ./recovery-delete.sh prints the exact rm commands."
     fi
 }
@@ -1033,7 +1039,10 @@ remove_apple_intelligence_models() {
             fi
             log_error "Failed to fully remove $path"
             if [[ -n "$err" ]]; then
-                printf '%s\n' "$err" | head -n 3 | sed 's/^/         /'
+                # sed -n '1,3p' reads ALL input, so no writer can die of
+                # SIGPIPE here (a `| head -3` killed the whole run with exit
+                # 141 under pipefail + set -e).
+                printf '%s\n' "$err" | sed -n '1,3{s/^/         /;p}'
             fi
             explain_system_delete_failure "$path"
             failed=$((failed + 1))
@@ -1045,11 +1054,11 @@ remove_apple_intelligence_models() {
     fi
 
     if [[ $failed -gt 0 ]]; then
-        log_warn "$failed path(s) incomplete — often .AssetData EROFS (issues #2/#3)."
-        log_warn "EROFS follows the directory inode: mv to /tmp does NOT help."
-        log_warn "Recovery Mode fix (Data volume mounted in Recovery):"
+        log_warn "$failed path(s) incomplete — EROFS lives in *.asset.purged/.AssetData (issues #2/#7)."
+        log_warn "Non-purged assets delete fine; EROFS follows the inode: mv to /tmp does NOT help."
+        log_warn "Fix from Recovery Terminal (Data volume mounted):"
         log_warn "  rm -rf /Volumes/<Data>/System/Library/AssetsV2/com_apple_MobileAsset_UAF_*"
-        log_warn "Or reboot once with SIP+auth-root disabled, then re-run this script."
+        log_warn "Or: sudo pkill -9 mobileassetd; sudo rm -rf <dir>; then re-run this script."
     fi
 }
 
